@@ -1,107 +1,101 @@
-from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
-import os
-from typing import Dict, Any, List, Optional
-from datetime import datetime
-import json
+import sqlite3
+import logging
+from typing import Dict, List, Optional
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 class DatabaseService:
     def __init__(self):
-        self.client = AsyncIOMotorClient(os.getenv("MONGODB_URI"))
-        self.db = self.client.voice_calling_db
-        self.conversations = self.db.conversations
-        self.users = self.db.users
-
-    async def log_conversation(self, conversation_data: Dict[str, Any]) -> str:
-        """
-        Log a conversation in the database
-        """
-        try:
-            conversation = {
-                "call_sid": conversation_data.get("call_sid"),
-                "contact_id": conversation_data.get("contact_id"),
-                "start_time": datetime.now(),
-                "end_time": None,
-                "transcript": conversation_data.get("transcript", ""),
-                "status": "in_progress",
-                "metadata": conversation_data.get("metadata", {})
-            }
-            
-            result = await self.conversations.insert_one(conversation)
-            return str(result.inserted_id)
-        except Exception as e:
-            raise Exception(f"Failed to log conversation: {str(e)}")
-
-    async def update_conversation(self, conversation_id: str, update_data: Dict[str, Any]) -> bool:
-        """
-        Update a conversation record
-        """
-        try:
-            result = await self.conversations.update_one(
-                {"_id": conversation_id},
-                {"$set": update_data}
+        self.db_path = "contacts.db"
+    
+    async def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            return result.modified_count > 0
-        except Exception as e:
-            raise Exception(f"Failed to update conversation: {str(e)}")
-
-    async def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get a conversation by ID
-        """
+        """)
+        conn.commit()
+        conn.close()
+    
+    async def add_contact(self, name: str, phone: str) -> Dict:
         try:
-            conversation = await self.conversations.find_one({"_id": conversation_id})
-            return conversation
-        except Exception as e:
-            raise Exception(f"Failed to get conversation: {str(e)}")
-
-    async def store_user_data(self, user_data: Dict[str, Any]) -> str:
-        """
-        Store or update user data
-        """
-        try:
-            user = {
-                "phone_number": user_data.get("phone_number"),
-                "name": user_data.get("name"),
-                "email": user_data.get("email"),
-                "last_contact": datetime.now(),
-                "metadata": user_data.get("metadata", {})
-            }
-            
-            result = await self.users.update_one(
-                {"phone_number": user_data.get("phone_number")},
-                {"$set": user},
-                upsert=True
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO contacts (name, phone) VALUES (?, ?)",
+                (name, phone)
             )
-            
-            if result.upserted_id:
-                return str(result.upserted_id)
-            return str(result.modified_count)
+            conn.commit()
+            contact_id = cursor.lastrowid
+            conn.close()
+            return {"id": contact_id, "name": name, "phone": phone}
+        except sqlite3.IntegrityError:
+            raise ValueError("Phone number already exists")
         except Exception as e:
-            raise Exception(f"Failed to store user data: {str(e)}")
-
-    async def get_user_data(self, phone_number: str) -> Optional[Dict[str, Any]]:
-        """
-        Get user data by phone number
-        """
+            logger.error(f"Error adding contact: {str(e)}")
+            raise
+    
+    async def get_contact(self, phone: str) -> Optional[Dict]:
         try:
-            user = await self.users.find_one({"phone_number": phone_number})
-            return user
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, name, phone FROM contacts WHERE phone = ?",
+                (phone,)
+            )
+            result = cursor.fetchone()
+            conn.close()
+            if result:
+                return {"id": result[0], "name": result[1], "phone": result[2]}
+            return None
         except Exception as e:
-            raise Exception(f"Failed to get user data: {str(e)}")
-
-    async def get_conversation_history(self, phone_number: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        Get conversation history for a user
-        """
+            logger.error(f"Error getting contact: {str(e)}")
+            raise
+    
+    async def get_all_contacts(self) -> List[Dict]:
         try:
-            cursor = self.conversations.find(
-                {"contact_id": phone_number}
-            ).sort("start_time", -1).limit(limit)
-            
-            conversations = await cursor.to_list(length=limit)
-            return conversations
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, phone FROM contacts")
+            results = cursor.fetchall()
+            conn.close()
+            return [
+                {"id": row[0], "name": row[1], "phone": row[2]}
+                for row in results
+            ]
         except Exception as e:
-            raise Exception(f"Failed to get conversation history: {str(e)}") 
+            logger.error(f"Error getting all contacts: {str(e)}")
+            raise
+    
+    async def update_contact(self, phone: str, name: str) -> Dict:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE contacts SET name = ? WHERE phone = ?",
+                (name, phone)
+            )
+            conn.commit()
+            conn.close()
+            return {"name": name, "phone": phone}
+        except Exception as e:
+            logger.error(f"Error updating contact: {str(e)}")
+            raise
+    
+    async def delete_contact(self, phone: str) -> bool:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM contacts WHERE phone = ?", (phone,))
+            conn.commit()
+            success = cursor.rowcount > 0
+            conn.close()
+            return success
+        except Exception as e:
+            logger.error(f"Error deleting contact: {str(e)}")
+            raise 
