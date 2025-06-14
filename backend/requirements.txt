@@ -1,0 +1,14 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+python-dotenv==1.0.1
+twilio==8.12.0
+openai==1.12.0
+websockets==12.0
+pydantic==2.6.1
+python-multipart==0.0.9
+hubspot-api-client==8.0.0
+motor==3.3.2
+pymongo==4.6.1
+python-jose==3.3.0
+passlib==1.7.4
+bcrypt==4.1.2 
