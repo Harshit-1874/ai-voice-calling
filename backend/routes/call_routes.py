@@ -5,11 +5,13 @@ from twilio.twiml.voice_response import VoiceResponse
 from controllers.call_controller import CallController
 from services.websocket_service import WebSocketService
 import websockets
+from controllers.hubspot_controller import HubspotController
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 call_controller = CallController()
 websocket_service = WebSocketService()
+hubspot_controller = HubspotController()
 
 @router.post("/call/{phone_number}")
 async def initiate_call(phone_number: str, request: Request):
@@ -53,4 +55,9 @@ async def handle_media_stream(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Error in media stream: {str(e)}")
     finally:
-        logger.info("Client disconnected from media stream") 
+        logger.info("Client disconnected from media stream")
+
+@router.get("/contacts")
+async def list_contacts():
+    """Get all contacts from HubSpot."""
+    return await hubspot_controller.list_contacts()
