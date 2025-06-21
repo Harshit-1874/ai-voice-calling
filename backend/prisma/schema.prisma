@@ -1,0 +1,88 @@
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = "5"
+  interface            = "asyncio"
+}
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Contact {
+  id        Int       @id @default(autoincrement())
+  name      String
+  phone     String    @unique
+  email     String?
+  company   String?
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  calls     CallLog[]
+
+  @@map("contacts")
+}
+
+model CallLog {
+  id             Int             @id @default(autoincrement())
+  callSid        String          @unique
+  fromNumber     String
+  toNumber       String
+  status         String
+  duration       Int?
+  startTime      DateTime        @default(now())
+  endTime        DateTime?
+  errorCode      String?
+  errorMessage   String?
+  recordingUrl   String?
+  contactId      Int?
+  sessionId      String?
+  session        Session?        @relation(fields: [sessionId], references: [id])
+  contact        Contact?        @relation(fields: [contactId], references: [id])
+  conversation   Conversation?
+  transcriptions Transcription[]
+
+  @@map("call_logs")
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  sessionId String    @unique
+  status    String
+  startTime DateTime  @default(now())
+  endTime   DateTime?
+  duration  Int?
+  model     String
+  voice     String
+  callLogs  CallLog[]
+
+  @@map("sessions")
+}
+
+model Transcription {
+  id         Int      @id @default(autoincrement())
+  callLogId  Int
+  sessionId  String?
+  timestamp  DateTime @default(now())
+  speaker    String
+  text       String
+  confidence Float?
+  isFinal    Boolean  @default(false)
+  callLog    CallLog  @relation(fields: [callLogId], references: [id])
+
+  @@map("transcriptions")
+}
+
+model Conversation {
+  id         Int      @id @default(autoincrement())
+  callLogId  Int      @unique
+  summary    String?
+  keyPoints  String?
+  sentiment  String?
+  leadScore  Int?
+  nextAction String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  callLog    CallLog  @relation(fields: [callLogId], references: [id])
+
+  @@map("conversations")
+}

@@ -3,6 +3,7 @@ import logging
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, BASE_URL
+from fastapi.responses import Response
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class TwilioService:
         logger.debug(f"Cleaned phone number: {cleaned}")
         return cleaned
 
-    def create_twiml_response(self, ws_host: str, from_number: str, to_number: str) -> str:
+    def create_twiml_response(self, ws_host: str, from_number: str, to_number: str, call_sid: str = None) -> str:
         """Create TwiML response for the call."""
         try:
             response = VoiceResponse()
@@ -36,12 +37,16 @@ class TwilioService:
             # Setup WebSocket connection
             connect = Connect()
             stream_url = f'wss://{ws_host}/media-stream'
+            if call_sid:
+                stream_url += f'?call_sid={call_sid}'
             logger.info(f"WebSocket stream URL: {stream_url}")
             
             # Configure stream with parameters
             stream = Stream(url=stream_url)
             stream.parameter(name="From", value=from_number)
             stream.parameter(name="To", value=to_number)
+            if call_sid:
+                stream.parameter(name="CallSid", value=call_sid)
             connect.append(stream)
             response.append(connect)
             
@@ -65,7 +70,7 @@ class TwilioService:
             call = self.client.calls.create(
                 to=to_number,
                 from_=from_number,
-                twiml=twiml,
+                url=f"{BASE_URL.rstrip('/')}/twiml",
                 status_callback=f"{BASE_URL.rstrip('/')}/call-status",
                 status_callback_event=['initiated', 'ringing', 'answered', 'completed']
             )

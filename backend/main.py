@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 from routes.call_routes import router as call_router
+from routes.contact_routes import router as contact_router
 from config import validate_env, HOST, PORT, DEBUG
 
 current_dir = Path(__file__).parent
@@ -33,7 +34,31 @@ async def lifespan(app: FastAPI):
     logger.info("Starting application lifespan")
     validate_env()
     logger.info("All environment variables validated")
+    
+    # Initialize database connection
+    try:
+        from services.prisma_service import PrismaService
+        prisma_service = PrismaService()
+        await prisma_service.connect()
+        logger.info("Database connection established")
+        
+        # Store the service in app state for access in routes
+        app.state.prisma_service = prisma_service
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        logger.error("Application will start without database functionality")
+        app.state.prisma_service = None
+    
     yield
+    
+    # Cleanup
+    if hasattr(app.state, 'prisma_service') and app.state.prisma_service:
+        try:
+            await app.state.prisma_service.disconnect()
+            logger.info("Database connection closed")
+        except Exception as e:
+            logger.error(f"Error closing database connection: {str(e)}")
+    
     logger.info("Shutting down server...")
 
 app = FastAPI(lifespan=lifespan)
@@ -47,6 +72,7 @@ app.add_middleware(
 )
 
 app.include_router(call_router)
+app.include_router(contact_router)
 
 if __name__ == "__main__":
     try:
