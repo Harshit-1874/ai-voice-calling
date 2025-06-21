@@ -17,9 +17,9 @@ class HubspotService:
         try:
             contacts = self.client.crm.contacts.get_all(
                 limit=limit,
-                properties=["phone", "mobilephone", "lifecyclestage", "hs_lead_status"]
+                properties=["phone", "mobilephone", "lifecyclestage", "hs_lead_status", 'email', 'firstname', 'lastname']
             )
-            logger.info(f"Fetched {len(contacts)} contacts from HubSpot")
+            # logger.info(f"Fetched {len(contacts)} contacts from HubSpot")
             # Convert each contact to dict
             contacts_dicts = [contact.to_dict() for contact in contacts]
             return contacts_dicts
