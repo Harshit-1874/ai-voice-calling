@@ -94,7 +94,12 @@ async def hubspot_sync_worker():
             
             # Initialize services
             hubspot_service = HubspotService()
-            prisma_service = PrismaService()
+            prisma_service = getattr(app.state, "prisma_service", None)
+            if not prisma_service:
+                return {
+                    "status": "error",
+                    "error": "Database connection not available"
+                }
             
             try:
                 # Connect to database
@@ -368,11 +373,16 @@ async def trigger_manual_sync():
         
         # Initialize services
         hubspot_service = HubspotService()
-        prisma_service = PrismaService()
+        prisma_service = getattr(app.state, "prisma_service", None)
+        if not prisma_service:
+            return {
+                "status": "error",
+                "error": "Database connection not available"
+            }
         
         try:
             # Connect to database
-            await prisma_service.connect()
+            # await prisma_service.connect()
             
             # Fetch contacts from HubSpot
             contacts = hubspot_service.get_contacts(limit=500)
@@ -406,9 +416,15 @@ async def trigger_manual_sync():
                 "errors_count": len(errors),
                 "errors": errors[:10]  # Return first 10 errors
             }
+        except Exception as e:
+            logger.error(f"Error during manual sync: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
             
-        finally:
-            await prisma_service.disconnect()
+        # finally:
+            # await prisma_service.disconnect()
             
     except Exception as e:
         logger.error(f"Error in manual sync: {str(e)}")

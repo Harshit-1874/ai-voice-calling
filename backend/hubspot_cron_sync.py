@@ -196,7 +196,7 @@ def extract_contact_data(hubspot_contact):
         'last_name': properties.get('lastname', ''),
         'phone': properties.get('phone', ''),
         'mobile_phone': properties.get('mobilephone', ''),
-        'lifecycle_stage': properties.get('lifecyclestage', ''),
+        # 'lifecycle_stage': properties.get('lifecyclestage', ''),
         'lead_status': properties.get('hs_lead_status', ''),
         'last_synced': datetime.now()
     }
@@ -214,7 +214,7 @@ def extract_hubspot_temp_data(hubspot_contact):
         'firstName': properties.get('firstname', ''),
         'lastName': properties.get('lastname', ''),
         'hubspotCreatedAt': properties.get('createdate', ''),
-        'lifecycleStage': properties.get('lifecyclestage', '')
+        # 'lifecycleStage': properties.get('lifecyclestage', '')
     }
 
 def setup_cron_job():
