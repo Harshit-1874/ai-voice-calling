@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from hubspot_cron_sync import extract_hubspot_temp_data, extract_contact_data
 from contextlib import asynccontextmanager
 import uvicorn
 from routes.call_routes import router as call_router
@@ -70,37 +71,48 @@ async def hubspot_sync_worker():
                     if contact.get('properties', {}).get('hs_lead_status', '').lower() not in ['unqualified', 'open deal']
                 ]
                 logger.info(f"Filtered to {len(filtered_contacts)} qualified contacts")
-                
-                # Store/update contacts in database
-                synced_count = 0
+
+                synced_temp_count = 0
                 for contact in filtered_contacts:
                     try:
-                        contact_data = extract_contact_data(contact)
-                        
-                        # Check if contact exists (by email or HubSpot ID)
-                        existing_contact = None
-                        if contact_data['email']:
-                            existing_contact = await prisma_service.get_contact_by_email(contact_data['email'])
-                        
-                        if not existing_contact and contact_data['hubspot_id']:
-                            existing_contact = await prisma_service.get_contact_by_hubspot_id(contact_data['hubspot_id'])
-                        
-                        if existing_contact:
-                            # Update existing contact
-                            await prisma_service.update_contact(existing_contact.id, contact_data)
-                            logger.debug(f"Updated contact: {contact_data['email']}")
-                        else:
-                            # Create new contact
-                            await prisma_service.create_contact(contact_data)
-                            logger.debug(f"Created new contact: {contact_data['email']}")
-                        
-                        synced_count += 1
-                        
+                        temp_data = extract_hubspot_temp_data(contact)
+                        await prisma_service.upsert_hubspot_temp_data(temp_data)
+                        synced_temp_count += 1
                     except Exception as e:
-                        logger.error(f"Error processing contact {contact.get('id', 'unknown')}: {str(e)}")
+                        logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
                         continue
                 
-                logger.info(f"Successfully synced {synced_count} contacts")
+                
+                # Store/update contacts in database
+                # synced_count = 0
+                # for contact in filtered_contacts:
+                #     try:
+                #         contact_data = extract_contact_data(contact)
+                        
+                #         # Check if contact exists (by email or HubSpot ID)
+                #         existing_contact = None
+                #         if contact_data['email']:
+                #             existing_contact = await prisma_service.get_contact_by_email(contact_data['email'])
+                        
+                #         if not existing_contact and contact_data['hubspot_id']:
+                #             existing_contact = await prisma_service.get_contact_by_hubspot_id(contact_data['hubspot_id'])
+                        
+                #         if existing_contact:
+                #             # Update existing contact
+                #             await prisma_service.update_contact(existing_contact.id, contact_data)
+                #             logger.debug(f"Updated contact: {contact_data['email']}")
+                #         else:
+                #             # Create new contact
+                #             await prisma_service.create_contact(contact_data)
+                #             logger.debug(f"Created new contact: {contact_data['email']}")
+                        
+                #         synced_count += 1
+                        
+                #     except Exception as e:
+                #         logger.error(f"Error processing contact {contact.get('id', 'unknown')}: {str(e)}")
+                #         continue
+                
+                logger.info(f"Successfully synced {synced_temp_count} contacts")
                 
             except Exception as e:
                 logger.error(f"Error during HubSpot sync: {str(e)}")
@@ -118,24 +130,6 @@ async def hubspot_sync_worker():
         except Exception as e:
             logger.error(f"Unexpected error in sync worker: {str(e)}")
             # Continue the loop even if there's an error
-
-def extract_contact_data(hubspot_contact):
-    """
-    Extract relevant data from HubSpot contact for database storage
-    """
-    properties = hubspot_contact.get('properties', {})
-    
-    return {
-        'hubspot_id': hubspot_contact.get('id'),
-        'email': properties.get('email', ''),
-        'first_name': properties.get('firstname', ''),
-        'last_name': properties.get('lastname', ''),
-        'phone': properties.get('phone', ''),
-        'mobile_phone': properties.get('mobilephone', ''),
-        'lifecycle_stage': properties.get('lifecyclestage', ''),
-        'lead_status': properties.get('hs_lead_status', ''),
-        'last_synced': datetime.now()
-    }
 
 def setup_hubspot_sync():
     """
@@ -396,37 +390,48 @@ async def trigger_manual_sync():
             # Store/update contacts in database
             synced_count = 0
             errors = []
-            
+
+            synced_temp_count = 0
             for contact in filtered_contacts:
                 try:
-                    contact_data = extract_contact_data(contact)
-                    
-                    # Check if contact exists
-                    existing_contact = None
-                    if contact_data['email']:
-                        existing_contact = await prisma_service.get_contact_by_email(contact_data['email'])
-                    
-                    if not existing_contact and contact_data['hubspot_id']:
-                        existing_contact = await prisma_service.get_contact_by_hubspot_id(contact_data['hubspot_id'])
-                    
-                    if existing_contact:
-                        await prisma_service.update_contact(existing_contact.id, contact_data)
-                    else:
-                        await prisma_service.create_contact(contact_data)
-                    
-                    synced_count += 1
-                    
+                    temp_data = extract_hubspot_temp_data(contact)
+                    await prisma_service.upsert_hubspot_temp_data(temp_data)
+                    synced_temp_count += 1
                 except Exception as e:
-                    error_msg = f"Error processing contact {contact.get('id', 'unknown')}: {str(e)}"
-                    errors.append(error_msg)
-                    logger.error(error_msg)
+                    logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
+                    errors.append(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
+                    continue
+            
+            # for contact in filtered_contacts:
+            #     try:
+            #         contact_data = extract_contact_data(contact)
+                    
+            #         # Check if contact exists
+            #         existing_contact = None
+            #         if contact_data['email']:
+            #             existing_contact = await prisma_service.get_contact_by_email(contact_data['email'])
+                    
+            #         if not existing_contact and contact_data['hubspot_id']:
+            #             existing_contact = await prisma_service.get_contact_by_hubspot_id(contact_data['hubspot_id'])
+                    
+            #         if existing_contact:
+            #             await prisma_service.update_contact(existing_contact.id, contact_data)
+            #         else:
+            #             await prisma_service.create_contact(contact_data)
+                    
+            #         synced_count += 1
+                    
+            #     except Exception as e:
+            #         error_msg = f"Error processing contact {contact.get('id', 'unknown')}: {str(e)}"
+            #         errors.append(error_msg)
+            #         logger.error(error_msg)
             
             return {
                 "status": "success",
                 "message": f"Manual sync completed",
                 "total_fetched": len(contacts),
                 "total_filtered": len(filtered_contacts),
-                "synced_count": synced_count,
+                "synced_count": synced_temp_count,
                 "errors_count": len(errors),
                 "errors": errors[:10]  # Return first 10 errors
             }

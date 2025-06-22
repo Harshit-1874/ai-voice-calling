@@ -86,3 +86,15 @@ model Conversation {
 
   @@map("conversations")
 }
+
+model HubspotTempData {
+  id             Int      @id @default(autoincrement())
+  hubspotId      String   @unique
+  hsLeadStatus   String?
+  email          String?
+  phone          String?
+  firstName      String?
+  lastName       String?
+  createdAt      DateTime @default(now())
+  hubspotCreatedAt String?
+}

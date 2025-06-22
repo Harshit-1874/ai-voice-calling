@@ -59,36 +59,47 @@ async def sync_hubspot_contacts():
         ]
         logger.info(f"Filtered to {len(filtered_contacts)} qualified contacts")
         
-        # Store/update contacts in database
-        synced_count = 0
+        synced_temp_count = 0
         for contact in filtered_contacts:
             try:
-                contact_data = extract_contact_data(contact)
-                
-                # Check if contact exists (by email or HubSpot ID)
-                existing_contact = None
-                if contact_data['email']:
-                    existing_contact = await prisma_service.get_contact_by_email(contact_data['email'])
-                
-                if not existing_contact and contact_data['hubspot_id']:
-                    existing_contact = await prisma_service.get_contact_by_hubspot_id(contact_data['hubspot_id'])
-                
-                if existing_contact:
-                    # Update existing contact
-                    await prisma_service.update_contact(existing_contact.id, contact_data)
-                    logger.debug(f"Updated contact: {contact_data['email']}")
-                else:
-                    # Create new contact
-                    await prisma_service.create_contact(contact_data)
-                    logger.debug(f"Created new contact: {contact_data['email']}")
-                
-                synced_count += 1
-                
+                temp_data = extract_hubspot_temp_data(contact)
+                await prisma_service.upsert_hubspot_temp_data(temp_data)
+                synced_temp_count += 1
             except Exception as e:
-                logger.error(f"Error processing contact {contact.get('id', 'unknown')}: {str(e)}")
+                logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
                 continue
         
-        logger.info(f"Successfully synced {synced_count} contacts")
+        logger.info(f"Successfully synced {synced_temp_count} contacts to HubspotTempData")
+        # Store/update contacts in database
+        synced_count = 0
+        # for contact in filtered_contacts:
+        #     try:
+        #         contact_data = extract_contact_data(contact)
+                
+        #         # Check if contact exists (by email or HubSpot ID)
+        #         existing_contact = None
+        #         if contact_data['email']:
+        #             existing_contact = await prisma_service.get_contact_by_email(contact_data['email'])
+                
+        #         if not existing_contact and contact_data['hubspot_id']:
+        #             existing_contact = await prisma_service.get_contact_by_hubspot_id(contact_data['hubspot_id'])
+                
+        #         if existing_contact:
+        #             # Update existing contact
+        #             await prisma_service.update_contact(existing_contact.id, contact_data)
+        #             logger.debug(f"Updated contact: {contact_data['email']}")
+        #         else:
+        #             # Create new contact
+        #             await prisma_service.create_contact(contact_data)
+        #             logger.debug(f"Created new contact: {contact_data['email']}")
+                
+        #         synced_count += 1
+                
+        #     except Exception as e:
+        #         logger.error(f"Error processing contact {contact.get('id', 'unknown')}: {str(e)}")
+        #         continue
+        
+        # logger.info(f"Successfully synced {synced_count} contacts")
         
     except Exception as e:
         logger.error(f"Error during HubSpot sync: {str(e)}")
@@ -115,6 +126,21 @@ def extract_contact_data(hubspot_contact):
         'lifecycle_stage': properties.get('lifecyclestage', ''),
         'lead_status': properties.get('hs_lead_status', ''),
         'last_synced': datetime.now()
+    }
+
+def extract_hubspot_temp_data(hubspot_contact):
+    """
+    Extract relevant data for HubspotTempData table
+    """
+    properties = hubspot_contact.get('properties', {})
+    return {
+        'hubspotId': str(hubspot_contact.get('id', '')),
+        'hsLeadStatus': properties.get('hs_lead_status', ''),
+        'email': properties.get('email', ''),
+        'phone': properties.get('phone', ''),
+        'firstName': properties.get('firstname', ''),
+        'lastName': properties.get('lastname', ''),
+        'hubspotCreatedAt': properties.get('createdate', '')
     }
 
 def setup_cron_job():

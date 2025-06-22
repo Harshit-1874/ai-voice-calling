@@ -386,3 +386,19 @@ class PrismaService:
         except Exception as e:
             logger.error(f"Error getting call statistics: {str(e)}")
             raise 
+
+    async def upsert_hubspot_temp_data(self, data: Dict[str, Any]):
+        """Insert or update a HubspotTempData record by hubspotId"""
+        try:
+            self._check_connection()
+            record = await self.prisma.hubspottempdata.upsert(
+                {'hubspotId': data['hubspotId']},
+                data={
+                    'create': data,
+                    'update': data
+                },
+            )
+            return record
+        except Exception as e:
+            logger.error(f"Error upserting HubspotTempData: {str(e)}")
+            raise
