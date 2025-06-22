@@ -285,6 +285,11 @@ app.include_router(call_router)
 app.include_router(hubspot_router)
 app.include_router(contact_router)
 
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 # Add a health check endpoint to verify sync status
 @app.get("/health/sync")
 async def check_sync_status():
