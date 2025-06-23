@@ -39,7 +39,7 @@ logger.info(f"Start Time: {datetime.now()}")
 logger.info(f"Log file location: {log_file}")
 logger.info("="*50)
 
-# Background task references
+# Global task references
 sync_task = None
 celery_worker_thread = None
 
@@ -76,6 +76,85 @@ def celery_worker_thread_func():
     except Exception as e:
         logger.error(f"Celery worker thread error: {str(e)}")
 
+def setup_unix_cron_job():
+    """
+    Set up cron job for Unix/Linux systems
+    """
+    try:
+        from crontab import CronTab
+        
+        # Try different approaches to get crontab
+        cron = None
+        
+        try:
+            import getpass
+            current_user = getpass.getuser()
+            logger.info(f"Attempting to set up cron job for user: {current_user}")
+            cron = CronTab(user=current_user)
+        except Exception as e1:
+            logger.warning(f"Failed to get crontab by username: {e1}")
+            
+            try:
+                cron = CronTab(user=True)
+            except Exception as e2:
+                logger.warning(f"Failed to get crontab with user=True: {e2}")
+                raise Exception("Could not access crontab")
+        
+        # Define the cron job command
+        script_path = current_dir / "hubspot_cron_sync.py"
+        python_path = sys.executable
+        cron_command = f'{python_path} {script_path} --run-sync'
+        
+        # Check if the cron job already exists
+        existing_jobs = list(cron.find_comment('hubspot-contact-sync'))
+        
+        if existing_jobs:
+            logger.info("HubSpot cron job already exists")
+            return "cron_job"
+        
+        # Create new cron job to run every 2 minutes
+        job = cron.new(command=cron_command, comment='hubspot-contact-sync')
+        job.setall('*/2 * * * *')  # Every 2 minutes
+        
+        # Check if the cron job is valid
+        if job.is_valid():
+            cron.write()
+            logger.info("HubSpot cron job created successfully!")
+            logger.info(f"Job schedule: */2 * * * * (every 2 minutes)")
+            logger.info(f"Command: {cron_command}")
+            return "cron_job"
+        else:
+            logger.error("Failed to create valid cron job")
+            raise Exception("Invalid cron job")
+            
+    except Exception as e:
+        logger.error(f"Error setting up Unix cron job: {str(e)}")
+        raise
+
+def setup_hubspot_sync():
+    """
+    Set up HubSpot sync based on the operating system
+    """
+    os_name = platform.system()
+    logger.info(f"Operating System: {os_name}")
+    
+    if os_name == "Windows":
+        logger.info("Windows detected - using in-app background task for HubSpot sync")
+        return "background_task"
+    else:
+        # Try to set up cron job for Unix/Linux systems
+        try:
+            from crontab import CronTab
+            logger.info("Unix/Linux detected - attempting to set up cron job")
+            return setup_unix_cron_job()
+        except ImportError:
+            logger.warning("crontab library not available, falling back to background task")
+            return "background_task"
+        except Exception as e:
+            logger.error(f"Error setting up cron job: {str(e)}")
+            logger.info("Falling back to background task")
+            return "background_task"
+
 async def hubspot_sync_worker():
     """
     Background worker that runs HubSpot sync every 2 minutes
@@ -90,22 +169,15 @@ async def hubspot_sync_worker():
             
             # Import here to avoid circular imports
             from services.hubspot_service import HubspotService
-            from services.prisma_service import PrismaService
             
             # Initialize services
             hubspot_service = HubspotService()
             prisma_service = getattr(app.state, "prisma_service", None)
             if not prisma_service:
-                return {
-                    "status": "error",
-                    "error": "Database connection not available"
-                }
+                logger.error("Database connection not available for sync")
+                continue
             
             try:
-                # Connect to database
-                await prisma_service.connect()
-                logger.info("Connected to database for sync")
-                
                 # Fetch contacts from HubSpot
                 contacts = hubspot_service.get_contacts(limit=500)
                 logger.info(f"Fetched {len(contacts)} contacts from HubSpot")
@@ -131,13 +203,6 @@ async def hubspot_sync_worker():
                 
             except Exception as e:
                 logger.error(f"Error during HubSpot sync: {str(e)}")
-            finally:
-                # Cleanup database connection
-                try:
-                    await prisma_service.disconnect()
-                    logger.debug("Disconnected from database after sync")
-                except Exception as e:
-                    logger.error(f"Error disconnecting from database: {str(e)}")
                     
         except asyncio.CancelledError:
             logger.info("HubSpot sync worker cancelled")
@@ -194,15 +259,22 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start Celery worker: {str(e)}")
         app.state.celery_worker_status = "failed"
     
-    # Start HubSpot sync background task
-    try:
-        sync_task = asyncio.create_task(hubspot_sync_worker())
-        logger.info("Started HubSpot sync background task")
-        app.state.sync_method = "background_task"
-        app.state.sync_task = sync_task
-    except Exception as e:
-        logger.error(f"Failed to start background sync task: {str(e)}")
-        app.state.sync_method = "none"
+    # Set up HubSpot sync based on OS
+    sync_method = setup_hubspot_sync()
+    
+    # Start background sync task if using background task method
+    if sync_method == "background_task":
+        try:
+            sync_task = asyncio.create_task(hubspot_sync_worker())
+            logger.info("Started HubSpot sync background task")
+            app.state.sync_method = "background_task"
+            app.state.sync_task = sync_task
+        except Exception as e:
+            logger.error(f"Failed to start background sync task: {str(e)}")
+            app.state.sync_method = "none"
+    else:
+        app.state.sync_method = sync_method
+        app.state.sync_task = None
     
     yield
     
@@ -260,11 +332,11 @@ app.include_router(contact_router)
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-# Add a health check endpoint to verify sync status
+# Unified sync status check endpoint
 @app.get("/health/sync")
 async def check_sync_status():
     """
-    Check the status of HubSpot sync
+    Check the status of HubSpot sync (both background task and cron job)
     """
     try:
         sync_method = getattr(app.state, 'sync_method', 'none')
@@ -285,6 +357,41 @@ async def check_sync_status():
                     "message": "Background sync task is not running",
                     "task_status": "stopped"
                 }
+        elif sync_method == "cron_job":
+            # For Unix systems with cron
+            try:
+                from crontab import CronTab
+                cron = CronTab(user=True)
+                existing_jobs = list(cron.find_comment('hubspot-contact-sync'))
+                
+                if existing_jobs:
+                    job_details = []
+                    for job in existing_jobs:
+                        job_details.append({
+                            "schedule": str(job),
+                            "command": str(job.command),
+                            "enabled": job.is_enabled(),
+                            "valid": job.is_valid()
+                        })
+                    
+                    return {
+                        "status": "active",
+                        "method": "cron_job",
+                        "jobs_count": len(existing_jobs),
+                        "jobs": job_details
+                    }
+                else:
+                    return {
+                        "status": "inactive",
+                        "method": "cron_job",
+                        "message": "No cron jobs found"
+                    }
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "method": "cron_job",
+                    "error": str(e)
+                }
         else:
             return {
                 "status": "inactive",
@@ -298,7 +405,7 @@ async def check_sync_status():
             "error": str(e)
         }
 
-# Add Celery worker health check
+# Celery worker health check
 @app.get("/health/celery")
 async def check_celery_status():
     """
@@ -333,7 +440,7 @@ async def check_celery_status():
             "error": str(e)
         }
 
-# Add queue status endpoint
+# Queue status endpoint
 @app.get("/health/queue")
 async def check_queue_status():
     """
@@ -359,7 +466,7 @@ async def check_queue_status():
             "error": str(e)
         }
 
-# Add manual sync trigger endpoint
+# Manual sync trigger endpoint
 @app.post("/sync/trigger")
 async def trigger_manual_sync():
     """
@@ -369,7 +476,6 @@ async def trigger_manual_sync():
         logger.info("Manual sync triggered via API")
         
         from services.hubspot_service import HubspotService
-        from services.prisma_service import PrismaService
         
         # Initialize services
         hubspot_service = HubspotService()
@@ -381,9 +487,6 @@ async def trigger_manual_sync():
             }
         
         try:
-            # Connect to database
-            # await prisma_service.connect()
-            
             # Fetch contacts from HubSpot
             contacts = hubspot_service.get_contacts(limit=500)
             
@@ -423,9 +526,6 @@ async def trigger_manual_sync():
                 "error": str(e)
             }
             
-        # finally:
-            # await prisma_service.disconnect()
-            
     except Exception as e:
         logger.error(f"Error in manual sync: {str(e)}")
         return {
@@ -433,7 +533,7 @@ async def trigger_manual_sync():
             "error": str(e)
         }
 
-# Add endpoint to queue calls
+# Queue management endpoints
 @app.post("/queue/call")
 async def queue_single_call(contact_data: dict, delay: int = 0, priority: int = 5):
     """
@@ -461,7 +561,6 @@ async def queue_single_call(contact_data: dict, delay: int = 0, priority: int = 
             "error": str(e)
         }
 
-# Add endpoint to queue batch calls
 @app.post("/queue/batch")
 async def queue_batch_calls(contacts: list, batch_size: int = 5, delay_between_calls: int = 30):
     """
@@ -491,7 +590,7 @@ async def queue_batch_calls(contacts: list, batch_size: int = 5, delay_between_c
 
 if __name__ == "__main__":
     try:
-        logger.info("Starting uvicorn server with integrated Celery worker")
+        logger.info("Starting uvicorn server with integrated Celery worker and OS-based sync")
         uvicorn.run(
             app, 
             host=HOST, 
