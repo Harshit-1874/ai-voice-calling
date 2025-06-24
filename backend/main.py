@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from routes.call_routes import router as call_router
 from routes.hubspot_routes import router as hubspot_router
+from tasks.call_tasks import make_call
 from routes.contact_routes import router as contact_router
 from config import validate_env, HOST, PORT, DEBUG
 
@@ -190,10 +191,14 @@ async def hubspot_sync_worker():
                 logger.info(f"Filtered to {len(filtered_contacts)} qualified contacts")
 
                 synced_temp_count = 0
-                for contact in filtered_contacts:
+                for idx, contact in enumerate(filtered_contacts):
                     try:
                         temp_data = extract_hubspot_temp_data(contact)
                         await prisma_service.upsert_hubspot_temp_data(temp_data)
+                        make_call.apply_async(
+                            kwargs={'contact_data': temp_data},
+                            countdown=idx * 30
+                        )
                         synced_temp_count += 1
                     except Exception as e:
                         logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
@@ -243,21 +248,21 @@ async def lifespan(app: FastAPI):
         app.state.queue_service = None
     
     # Start Celery worker in a separate thread
-    try:
-        celery_worker_thread = threading.Thread(
-            target=celery_worker_thread_func,
-            daemon=True  # Dies when main thread dies
-        )
-        celery_worker_thread.start()
-        logger.info("Celery worker thread started")
+    # try:
+    #     celery_worker_thread = threading.Thread(
+    #         target=celery_worker_thread_func,
+    #         daemon=True  # Dies when main thread dies
+    #     )
+    #     celery_worker_thread.start()
+    #     logger.info("Celery worker thread started")
         
-        # Give the worker a moment to start
-        await asyncio.sleep(2)
+    #     # Give the worker a moment to start
+    #     await asyncio.sleep(2)
         
-        app.state.celery_worker_status = "running"
-    except Exception as e:
-        logger.error(f"Failed to start Celery worker: {str(e)}")
-        app.state.celery_worker_status = "failed"
+    #     app.state.celery_worker_status = "running"
+    # except Exception as e:
+    #     logger.error(f"Failed to start Celery worker: {str(e)}")
+    #     app.state.celery_worker_status = "failed"
     
     # Set up HubSpot sync based on OS
     sync_method = setup_hubspot_sync()
@@ -500,10 +505,14 @@ async def trigger_manual_sync():
             synced_temp_count = 0
             errors = []
 
-            for contact in filtered_contacts:
+            for idx, contact in enumerate(filtered_contacts):
                 try:
                     temp_data = extract_hubspot_temp_data(contact)
                     await prisma_service.upsert_hubspot_temp_data(temp_data)
+                    make_call.apply_async(
+                        kwargs={'contact_data': temp_data},
+                        countdown=idx * 30
+                    )
                     synced_temp_count += 1
                 except Exception as e:
                     logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")

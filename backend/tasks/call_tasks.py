@@ -2,12 +2,14 @@
 from celery import Celery
 from celery.exceptions import Retry
 from celery_app import celery_app
+import redis
 from services.prisma_service import PrismaService
 from controllers.call_controller import CallController
 from services.redis_service import RedisService
 import logging
 import asyncio
 import json
+from config import REDIS_HOST_URI, REDIS_PASS
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import time
@@ -23,6 +25,18 @@ def make_call(self, contact_data: Dict[str, Any], call_params: Dict[str, Any] = 
         contact_data: Contact information from HubSpot
         call_params: Additional call parameters (priority, delay, etc.)
     """
+    redis_client = redis.StrictRedis(
+        host=REDIS_HOST_URI,
+        port=11068,
+        password=REDIS_PASS,
+        decode_responses=True,
+        username="default",
+    )
+    lock = redis_client.lock("active_call_lock", timeout=600)
+    have_lock = lock.acquire(blocking=False)
+    if not have_lock:
+        logger.info("Another call is in progress. Retrying...")
+        raise self.retry(exc=Exception("Call in progress"), countdown=30)
     try:
         logger.info(f"Starting call task for contact: {contact_data.get('email', 'unknown')}")
         
@@ -104,6 +118,12 @@ def make_call(self, contact_data: Dict[str, Any], call_params: Dict[str, Any] = 
         
         raise self.retry(exc=e, countdown=60)
 
+    finally:
+        if have_lock:
+            lock.release()
+            logger.info("Released active call lock")
+        else:
+            logger.warning("Failed to acquire active call lock")
 @celery_app.task(bind=True)
 def process_contact_calls(self, contact_list: List[Dict[str, Any]], batch_size: int = 5, delay_between_calls: int = 30):
     """
