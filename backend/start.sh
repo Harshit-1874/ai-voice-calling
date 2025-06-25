@@ -20,4 +20,5 @@ prisma generate
 
 # Start the application
 echo "🌐 Starting FastAPI server..."
+exec celery -A celery_app.celery_app worker --loglevel=info --pool=solo
 exec uvicorn main:app --host 0.0.0.0 --port 8000 

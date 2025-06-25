@@ -9,7 +9,7 @@ from services.prisma_service import PrismaService
 logger = logging.getLogger(__name__)
 
 # OpenAI Configuration
-VOICE = 'alloy'
+VOICE = 'echo'
 
 
 SYSTEM_MESSAGE = (
