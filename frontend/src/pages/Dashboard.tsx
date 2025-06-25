@@ -109,14 +109,30 @@ export default function Dashboard() {
     }
   };
 
+  // Add this function to refresh call logs
+  const refreshCallLogs = async () => {
+    setLogsLoading(true);
+    setLogsError(null);
+    try {
+      const res = await fetch('http://localhost:8000/call-logs');
+      if (!res.ok) throw new Error('Failed to fetch call logs');
+      const data = await res.json();
+      setCallLogs(data.call_logs || []);
+    } catch (e: any) {
+      setLogsError(e.message || 'Unknown error');
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 flex h-screen w-screen bg-gray-950 text-gray-100 dark bg-dark">
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col h-full">
-        <div className="h-20 flex items-center justify-center border-b border-gray-800">
+      {/* <aside className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col h-full">
+        {/* <div className="h-20 flex items-center justify-center border-b border-gray-800">
           <span className="font-bold text-xl tracking-wide text-white">Cairo</span>
-        </div>
-        <nav className="flex-1 px-4 py-6 space-y-2">
+        </div> */}
+        { /* <nav className="flex-1 px-4 py-6 space-y-2">
           <a href="#" className="flex items-center px-3 py-2 rounded-lg bg-blue-900 text-blue-200 font-semibold">
             <span className="mr-3">📈</span> Overview
           </a>
@@ -140,13 +156,13 @@ export default function Dashboard() {
           </a>
         </nav>
         <div className="p-4 border-t border-gray-800 flex items-center">
-          <img src="https://randomuser.me/api/portraits/men/32.jpg" alt="User" className="w-10 h-10 rounded-full mr-3" />
+          <img src="https://randomuser.me/api/portraits/men/31.jpg" alt="User" className="w-10 h-10 rounded-full mr-3" />
           <div>
             <div className="font-semibold text-white">John Doe</div>
             <div className="text-xs text-gray-400">Admin</div>
           </div>
         </div>
-      </aside>
+      </aside> */}
       {/* Main Content */}
       <main className="flex-1 p-8 overflow-y-auto h-full bg-gray-950 text-gray-100">
         {/* Top bar */}
@@ -154,7 +170,7 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold">Dashboard <span className="ml-1">👋</span></h1>
           <div className="flex items-center space-x-4">
             <input type="text" placeholder="Search..." className="px-3 py-2 border border-gray-700 rounded-lg focus:outline-none focus:ring w-64 bg-gray-900 text-gray-100" />
-            <img src="https://randomuser.me/api/portraits/men/32.jpg" alt="User" className="w-10 h-10 rounded-full" />
+            <img src="https://randomuser.me/api/portraits/men/31.jpg" alt="User" className="w-10 h-10 rounded-full" />
           </div>
         </div>
 
@@ -202,7 +218,21 @@ export default function Dashboard() {
 
         {/* Call Logs Table */}
         <section className="mb-8">
-          <h2 className="text-xl font-bold mb-2">Call Logs</h2>
+          <div className="flex items-center mb-2">
+            <h2 className="text-xl font-bold mr-2">Call Logs</h2>
+            <button
+              onClick={refreshCallLogs}
+              className="px-3 py-1 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-200 flex items-center"
+              title="Refresh"
+              type="button"
+              disabled={logsLoading}
+            >
+              <svg className={`w-4 h-4 mr-1 ${logsLoading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582M20 20v-5h-.581M5.635 19A9 9 0 1 1 19 5.635" />
+              </svg>
+              {logsLoading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
           {logsLoading ? (
             <div>Loading call logs...</div>
           ) : logsError ? (
@@ -275,27 +305,27 @@ export default function Dashboard() {
         {/* Main Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Line Chart Placeholder */}
-          <div className="col-span-2 bg-gray-900 rounded-xl shadow-sm p-6">
+          {/* <div className="col-span-2 bg-gray-900 rounded-xl shadow-sm p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="font-semibold text-lg">Overall Call Volume</div>
               <div className="text-xs text-gray-400">This Month</div>
             </div>
             <div className="h-48 flex items-center justify-center text-gray-400">
               {/* Replace with chart.js or similar for real data */}
-              <span>Line Chart Placeholder</span>
+              { /* <span>Line Chart Placeholder</span>
             </div>
-          </div>
+          </div> */}
           {/* Calls Geography Placeholder */}
-          <div className="bg-gray-900 rounded-xl shadow-sm p-6">
+          {/* <div className="bg-gray-900 rounded-xl shadow-sm p-6">
             <div className="font-semibold text-lg mb-4">Calls Geography</div>
             <div className="h-48 flex items-center justify-center text-gray-400">
               {/* Replace with a map component for real data */}
-              <span>Map Placeholder</span>
+              { /* <span>Map Placeholder</span>
             </div>
-          </div>
+          </div> */}
         </div>
         {/* Best Agents Table */}
-        <div className="mt-8 bg-gray-900 rounded-xl shadow-sm p-6">
+        {/* <div className="mt-8 bg-gray-900 rounded-xl shadow-sm p-6">
           <div className="font-semibold text-lg mb-4">Best Agents This Week</div>
           <div className="overflow-x-auto">
             {loading ? (
@@ -323,8 +353,8 @@ export default function Dashboard() {
               </table>
             )}
           </div>
-        </div>
+        </div> */}
       </main>
     </div>
   );
-} 
+}
