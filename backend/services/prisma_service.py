@@ -2,12 +2,15 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import json
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 class PrismaService:
     def __init__(self):
         self._is_connected = False
+        self._connecting = False
+        self._connection_lock = asyncio.Lock()
         self.prisma = None
         try:
             from prisma import Prisma
@@ -18,55 +21,83 @@ class PrismaService:
             raise
 
     async def connect(self):
-        """Connect to the database"""
-        if not self._is_connected and self.prisma:
+        """Connect to the database with proper connection management"""
+        async with self._connection_lock:
+            if self._is_connected:
+                logger.debug("Already connected to database")
+                return
+            
+            if self._connecting:
+                logger.debug("Connection already in progress, waiting...")
+                while self._connecting:
+                    await asyncio.sleep(0.1)
+                return
+            
+            if not self.prisma:
+                logger.error("Prisma client not initialized")
+                return
+            
+            self._connecting = True
             try:
-                # Check if connect method exists and is callable
-                if hasattr(self.prisma, 'connect') and callable(self.prisma.connect):
-                    # Try to call connect and check if it's async
-                    import inspect
-                    if inspect.iscoroutinefunction(self.prisma.connect):
-                        result = await self.prisma.connect()
-                    else:
-                        result = self.prisma.connect()
-                    
-                    # Check if connect was successful
-                    if result is None or result is True:
+                # Check if already connected at Prisma level
+                try:
+                    # Try a simple query to test connection
+                    await self.prisma.calllog.count()
+                    self._is_connected = True
+                    logger.info("Database connection verified")
+                except Exception:
+                    # Not connected, proceed with connection
+                    if hasattr(self.prisma, 'connect') and callable(self.prisma.connect):
+                        import inspect
+                        if inspect.iscoroutinefunction(self.prisma.connect):
+                            await self.prisma.connect()
+                        else:
+                            self.prisma.connect()
+                        
                         self._is_connected = True
                         logger.info("Connected to Prisma database")
                     else:
-                        logger.warning(f"Prisma connect returned: {result}")
-                        self._is_connected = True  # Assume connected for compatibility
-                else:
-                    logger.warning("Prisma client connect method not available")
-                    self._is_connected = True  # Assume connected for compatibility
+                        logger.warning("Prisma client connect method not available")
+                        self._is_connected = True
             except Exception as e:
                 logger.error(f"Failed to connect to database: {str(e)}")
-                # Don't raise the error, just log it
-                logger.warning("Continuing without database connection")
-                self._is_connected = True  # Assume connected for compatibility
+                # Don't set _is_connected to True if connection actually failed
+                self._is_connected = False
+            finally:
+                self._connecting = False
 
     async def disconnect(self):
         """Disconnect from the database"""
-        if self._is_connected and self.prisma:
+        async with self._connection_lock:
+            if not self._is_connected or not self.prisma:
+                return
+            
             try:
-                # Check if disconnect method exists and is callable
                 if hasattr(self.prisma, 'disconnect') and callable(self.prisma.disconnect):
-                    # Try to call disconnect and check if it's async
                     import inspect
                     if inspect.iscoroutinefunction(self.prisma.disconnect):
                         await self.prisma.disconnect()
                     else:
                         self.prisma.disconnect()
-                    
-                    self._is_connected = False
-                    logger.info("Disconnected from Prisma database")
-                else:
-                    logger.warning("Prisma client disconnect method not available")
-                    self._is_connected = False
+                
+                self._is_connected = False
+                logger.info("Disconnected from Prisma database")
             except Exception as e:
                 logger.error(f"Error disconnecting from database: {str(e)}")
                 self._is_connected = False
+
+    async def ensure_connected(self):
+        """Ensure database connection is active"""
+        if not self._is_connected:
+            await self.connect()
+        
+        # Double-check with a test query
+        try:
+            await self.prisma.calllog.count()
+        except Exception as e:
+            logger.warning(f"Connection test failed: {str(e)}, attempting reconnect")
+            self._is_connected = False
+            await self.connect()
 
     async def __aenter__(self):
         await self.connect()
@@ -86,7 +117,7 @@ class PrismaService:
     async def create_contact(self, name: str, phone: str, email: str = None, company: str = None, notes: str = None):
         """Create a new contact"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             contact = await self.prisma.contact.create({
                 'data': {
                     'name': name,
@@ -105,7 +136,7 @@ class PrismaService:
     async def get_contact_by_phone(self, phone: str):
         """Get contact by phone number"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             contact = await self.prisma.contact.find_unique({
                 'where': {'phone': phone}
             })
@@ -117,7 +148,7 @@ class PrismaService:
     async def get_all_contacts(self):
         """Get all contacts"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             contacts = await self.prisma.contact.find_many({
                 'order': {'createdAt': 'desc'}
             })
@@ -129,7 +160,7 @@ class PrismaService:
     async def update_contact(self, phone: str, **kwargs):
         """Update contact by phone number"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             contact = await self.prisma.contact.update({
                 'where': {'phone': phone},
                 'data': kwargs
@@ -143,7 +174,7 @@ class PrismaService:
     async def delete_contact(self, phone: str) -> bool:
         """Delete contact by phone number"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             contact = await self.prisma.contact.delete({
                 'where': {'phone': phone}
             })
@@ -157,7 +188,7 @@ class PrismaService:
     async def create_call_log(self, call_sid: str, from_number: str, to_number: str, status: str = "initiated"):
         """Create a new call log entry (no contact dependency)"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             call_log = await self.prisma.calllog.create(
                 data={
                     'callSid': call_sid,
@@ -177,36 +208,45 @@ class PrismaService:
                                 recording_url: str = None):
         """Update call status and details"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
+            
             # First, try to find the existing call log
             logger.debug(f"Looking for call log with callSid: {call_sid}")
             call_log = await self.prisma.calllog.find_unique(where={'callSid': call_sid})
-            logger.debug(f"Result of find_unique: {call_log}")
-            if call_log:
-                try:
-                    update_data = {'status': status}
-                    if duration is not None:
-                        update_data['duration'] = duration
-                    if error_code is not None:
-                        update_data['errorCode'] = error_code
-                    if error_message is not None:
-                        update_data['errorMessage'] = error_message
-                    if recording_url is not None:
-                        update_data['recordingUrl'] = recording_url
-                    if status in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
-                        update_data['endTime'] = datetime.now()
-                    call_log = await self.prisma.calllog.update(
-                        where={'callSid': call_sid},
-                        data=update_data
-                    )
-                    logger.info(f"Updated call log {call_sid} status to: {status}")
-                    return call_log
-                except Exception as update_error:
-                    logger.error(f"Error updating call log {call_sid}: {str(update_error)}")
-                    return None
-            else:
-                logger.warning(f"Call log not found for {call_sid}, cannot update.")
-                return None
+            
+            if not call_log:
+                logger.warning(f"Call log not found for {call_sid}. Creating new call log entry.")
+                # Create a basic call log entry if it doesn't exist
+                call_log = await self.prisma.calllog.create(
+                    data={
+                        'callSid': call_sid,
+                        'fromNumber': 'unknown',  # You might want to pass these as parameters
+                        'toNumber': 'unknown',
+                        'status': status
+                    }
+                )
+                logger.info(f"Created missing call log for {call_sid}")
+            
+            # Update the call log
+            update_data = {'status': status}
+            if duration is not None:
+                update_data['duration'] = duration
+            if error_code is not None:
+                update_data['errorCode'] = error_code
+            if error_message is not None:
+                update_data['errorMessage'] = error_message
+            if recording_url is not None:
+                update_data['recordingUrl'] = recording_url
+            if status in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
+                update_data['endTime'] = datetime.now()
+            
+            call_log = await self.prisma.calllog.update(
+                where={'callSid': call_sid},
+                data=update_data
+            )
+            logger.info(f"Updated call log {call_sid} status to: {status}")
+            return call_log
+            
         except Exception as e:
             logger.error(f"Error in update_call_status: {str(e)}")
             return None
@@ -214,7 +254,7 @@ class PrismaService:
     async def get_call_log(self, call_sid: str):
         """Get call log by SID"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             call_log = await self.prisma.calllog.find_unique(
                 where={'callSid': call_sid},
                 include={
@@ -231,7 +271,7 @@ class PrismaService:
     async def get_all_call_logs(self, limit: int = 100):
         """Get all call logs with pagination"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             call_logs = await self.prisma.calllog.find_many(
                 take=limit,
                 order={'startTime': 'desc'},
@@ -250,7 +290,7 @@ class PrismaService:
                            voice: str = "alloy"):
         """Create a new session"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             session = await self.prisma.session.create(
                 data={
                     'sessionId': session_id,
@@ -268,7 +308,7 @@ class PrismaService:
     async def update_session_status(self, session_id: str, status: str, duration: int = None):
         """Update session status"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             update_data = {'status': status}
             if duration is not None:
                 update_data['duration'] = duration
@@ -287,7 +327,7 @@ class PrismaService:
     async def link_session_to_call(self, session_id: str, call_sid: str):
         """Link a session to a call log"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             call_log = await self.prisma.calllog.update(
                 where={'callSid': call_sid},
                 data={'sessionId': session_id}
@@ -304,7 +344,7 @@ class PrismaService:
                                is_final: bool = False):
         """Add a transcription entry"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             transcription = await self.prisma.transcription.create(
                 data={
                     'callLogId': call_log_id,
@@ -324,7 +364,7 @@ class PrismaService:
     async def get_transcriptions_for_call(self, call_log_id: int):
         """Get all transcriptions for a call"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             transcriptions = await self.prisma.transcription.find_many(
                 where={'callLogId': call_log_id},
                 order={'timestamp': 'asc'}
@@ -340,7 +380,7 @@ class PrismaService:
                                          lead_score: int = None, next_action: str = None):
         """Create conversation analysis"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             key_points_json = json.dumps(key_points) if key_points else None
             conversation = await self.prisma.conversation.create(
                 data={
@@ -361,7 +401,7 @@ class PrismaService:
     async def get_conversation_analysis(self, call_log_id: int):
         """Get conversation analysis for a call"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             conversation = await self.prisma.conversation.find_unique(
                 where={'callLogId': call_log_id}
             )
@@ -374,7 +414,7 @@ class PrismaService:
     async def get_call_statistics(self) -> Dict[str, Any]:
         """Get call statistics"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             total_calls = await self.prisma.calllog.count()
             completed_calls = await self.prisma.calllog.count(where={'status': 'completed'})
             failed_calls = await self.prisma.calllog.count(where={'status': 'failed'})
@@ -390,7 +430,7 @@ class PrismaService:
     async def upsert_hubspot_temp_data(self, data: Dict[str, Any]):
         """Insert or update a HubspotTempData record by hubspotId"""
         try:
-            self._check_connection()
+            await self.ensure_connected()
             record = await self.prisma.hubspottempdata.upsert(
                 {'hubspotId': data['hubspotId']},
                 data={
