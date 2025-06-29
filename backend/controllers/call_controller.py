@@ -4,6 +4,7 @@ from typing import Dict, Any
 from services.twilio_service import TwilioService
 from services.websocket_service import WebSocketService
 from services.prisma_service import PrismaService
+from services.transcription_service import TranscriptionService
 from config import BASE_URL
 import asyncio
 import json
@@ -15,6 +16,7 @@ class CallController:
         self.twilio_service = TwilioService()
         self.websocket_service = WebSocketService()
         self.prisma_service = PrismaService()
+        self.transcription_service = TranscriptionService()  # Add enhanced transcription service
 
     async def initiate_call(self, phone_number: str, request: Request) -> Dict[str, Any]:
         try:
