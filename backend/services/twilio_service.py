@@ -1,7 +1,7 @@
 import os
 import logging
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Record
 from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, BASE_URL
 from fastapi.responses import Response
 
@@ -26,7 +26,7 @@ class TwilioService:
         return cleaned
 
     def create_twiml_response(self, ws_host: str, from_number: str, to_number: str, call_sid: str = None) -> str:
-        """Create TwiML response for the call."""
+        """Create TwiML response for the call with WebSocket streaming AND recording/transcription."""
         try:
             response = VoiceResponse()
             
@@ -34,7 +34,7 @@ class TwilioService:
             response.say("Please wait while we connect your call to the AI voice assistant.")
             response.pause(length=1)
             
-            # Setup WebSocket connection
+            # Setup WebSocket connection for real-time AI conversation
             connect = Connect()
             stream_url = f'wss://{ws_host}/media-stream'
             if call_sid:
@@ -50,15 +50,58 @@ class TwilioService:
             connect.append(stream)
             response.append(connect)
             
+            # ALSO start recording with transcription for backup/compliance
+            # This runs in parallel with the WebSocket stream
+            recording_callback_url = f"{BASE_URL.rstrip('/')}/recording-callback"
+            transcription_callback_url = f"{BASE_URL.rstrip('/')}/transcription-callback"
+            
+            # Start recording
+            response.record(
+                action=recording_callback_url,
+                method="POST",
+                timeout=3600,  # Long timeout to capture entire call
+                max_length=7200,  # 2 hours max
+                transcribe=True,  # Enable transcription
+                transcribe_callback=transcription_callback_url,
+                play_beep=False,  # Don't play beep when recording starts
+                trim="trim-silence"  # Remove silence from beginning and end
+            )
+            
             # Add final instruction
             response.say("You can start talking now!")
             
             twiml = str(response)
-            logger.info(f"Generated TwiML: {twiml}")
+            logger.info(f"Generated TwiML with WebSocket connection AND recording: {twiml}")
             return twiml
             
         except Exception as e:
             logger.error(f"Error creating TwiML response: {str(e)}")
+            raise
+
+    def create_recording_twiml_response(self, call_sid: str = None) -> str:
+        """Create separate TwiML response for recording (if needed)."""
+        try:
+            response = VoiceResponse()
+            
+            # Start recording with transcription
+            recording_callback_url = f"{BASE_URL.rstrip('/')}/recording-callback"
+            response.record(
+                action=recording_callback_url,
+                method="POST",
+                timeout=3600,  # Long timeout to capture entire call
+                max_length=7200,  # 2 hours max
+                transcribe=True,  # Enable transcription
+                transcribe_callback=f"{BASE_URL.rstrip('/')}/transcription-callback",
+                play_beep=False,  # Don't play beep when recording starts
+                trim="trim-silence"  # Remove silence from beginning and end
+            )
+            
+            twiml = str(response)
+            logger.info(f"Generated recording TwiML: {twiml}")
+            return twiml
+            
+        except Exception as e:
+            logger.error(f"Error creating recording TwiML response: {str(e)}")
             raise
 
     def initiate_call(self, to_number: str, from_number: str, twiml: str) -> dict:

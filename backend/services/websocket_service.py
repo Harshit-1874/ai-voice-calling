@@ -5,6 +5,7 @@ import websockets
 import logging
 from config import OPENAI_API_KEY
 from services.prisma_service import PrismaService
+from services.transcription_service import TranscriptionService
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class WebSocketService:
             raise ValueError("OpenAI API key not found in environment variables")
         self.api_key = OPENAI_API_KEY
         self.prisma_service = PrismaService()
+        self.transcription_service = TranscriptionService()
         logger.info("WebSocketService initialized")
 
     async def initialize_session(self, openai_ws, call_sid: str = None):
@@ -77,6 +79,10 @@ class WebSocketService:
                 "voice": VOICE,
                 "instructions": SYSTEM_MESSAGE,
                 "modalities": ["text", "audio"],
+                "input_audio_transcription": {
+                    "model": "whisper-1",
+                    "enabled": True
+                },
                 "temperature": 0.7,  # Slightly lower temperature for more focused responses
             }
         }
@@ -156,22 +162,97 @@ class WebSocketService:
             mark_queue.append('responsePart')
             logger.debug("Sent mark event")
 
-    async def store_transcription(self, call_sid: str, speaker: str, text: str, confidence: float = None, session_id: str = None):
-        """Store transcription in database"""
+    async def handle_openai_events(self, response: dict, call_sid: str, session_id: str = None):
+        """
+        Handle OpenAI events with proper transcription logic
+        Similar to Deepgram event handling pattern
+        """
         try:
-            async with self.prisma_service:
-                call_log = await self.prisma_service.get_call_log(call_sid)
-                if call_log:
-                    await self.prisma_service.add_transcription(
-                        call_log_id=call_log.id,
-                        speaker=speaker,
-                        text=text,
-                        confidence=confidence,
-                        session_id=session_id,
-                        is_final=True
+            event_type = response.get('type')
+            
+            # Handle transcription completion events
+            if event_type == 'conversation.item.input_audio_transcription.completed':
+                logger.info("✅ TRANSCRIPTION COMPLETED EVENT RECEIVED!")
+                
+                # Extract transcription data
+                item_id = response.get('item_id')
+                content_index = response.get('content_index', 0)
+                transcript = response.get('transcript', '')
+                
+                if transcript and transcript.strip():
+                    # Process as final transcription with speech_final=True
+                    await self.transcription_service.process_openai_transcript(
+                        call_sid=call_sid,
+                        speaker="customer",
+                        text=transcript,
+                        is_final=True,
+                        is_speech_final=True,
+                        confidence=0.95,  # OpenAI typically has high confidence
+                        session_id=session_id
                     )
+                    logger.info(f"🎯 Processed final transcription: {transcript[:50]}...")
+                else:
+                    logger.warning("Transcription completed event received but no transcript text")
+            
+            # Handle transcription failures
+            elif event_type == 'conversation.item.input_audio_transcription.failed':
+                logger.error("❌ TRANSCRIPTION FAILED EVENT RECEIVED!")
+                error_details = response.get('error', {})
+                logger.error(f"Transcription failure: {error_details}")
+            
+            # Handle speech detection events
+            elif event_type == 'input_audio_buffer.speech_started':
+                logger.info("🎤 SPEECH STARTED detected - VAD triggered!")
+                # Initialize or update session activity
+                if call_sid not in self.transcription_service.active_sessions:
+                    await self.transcription_service.initialize_session(call_sid, session_id)
+            
+            elif event_type == 'input_audio_buffer.speech_stopped':
+                logger.info("🔇 SPEECH STOPPED detected - should trigger transcription processing")
+                # Handle utterance end - this is like UtteranceEnd in Deepgram
+                await self.transcription_service.handle_utterance_end(
+                    call_sid=call_sid,
+                    speaker="customer",
+                    session_id=session_id
+                )
+            
+            elif event_type == 'input_audio_buffer.committed':
+                logger.info("📝 AUDIO BUFFER COMMITTED - audio ready for processing")
+                # Audio is committed for processing, transcription should follow
+            
+            # Handle response content for assistant transcription
+            elif event_type == 'response.content.delta' and response.get('delta', {}).get('type') == 'text':
+                text_content = response['delta']['text']
+                if text_content and text_content.strip():
+                    await self.transcription_service.process_openai_transcript(
+                        call_sid=call_sid,
+                        speaker="assistant",
+                        text=text_content,
+                        is_final=False,  # Delta content is typically partial
+                        is_speech_final=False,
+                        confidence=0.95,
+                        session_id=session_id
+                    )
+            
+            # Handle final response content
+            elif event_type == 'response.content.done':
+                logger.info("🏁 RESPONSE CONTENT DONE - assistant message complete")
+                # Could process any final assistant text here if needed
+                
         except Exception as e:
-            logger.error(f"Error storing transcription: {str(e)}")
+            logger.error(f"Error handling OpenAI event {event_type}: {str(e)}")
+
+    async def store_transcription(self, call_sid: str, speaker: str, text: str, confidence: float = None, session_id: str = None):
+        """Deprecated: Use transcription_service instead"""
+        logger.warning("Using deprecated store_transcription method. Use transcription_service instead.")
+        return await self.transcription_service.store_transcription(
+            call_sid=call_sid,
+            speaker=speaker,
+            text=text,
+            confidence=confidence,
+            session_id=session_id,
+            is_final=True
+        )
 
     async def handle_media_stream(self, websocket, openai_ws, call_sid: str = None):
         """Handle the media stream between Twilio and OpenAI."""
@@ -183,6 +264,10 @@ class WebSocketService:
             mark_queue = []
             response_start_timestamp_twilio = None
             current_session_id = None
+
+            # Initialize transcription session
+            if call_sid:
+                await self.transcription_service.initialize_session(call_sid, current_session_id)
 
             async def receive_from_twilio():
                 nonlocal stream_sid, latest_media_timestamp
@@ -198,7 +283,13 @@ class WebSocketService:
                                 "audio": data['media']['payload']
                             }
                             await openai_ws.send(json.dumps(audio_append))
-                            logger.debug("Sent audio chunk to OpenAI")
+                            # Add more detailed audio logging
+                            payload_size = len(data['media']['payload'])
+                            logger.debug(f"Sent audio chunk to OpenAI: timestamp={latest_media_timestamp}, payload_size={payload_size}")
+                            
+                            # Log every 100th audio packet to track activity without spam
+                            if latest_media_timestamp % 10000 == 0:  # Every ~10 seconds
+                                logger.info(f"AUDIO ACTIVITY: Streaming audio to OpenAI - timestamp={latest_media_timestamp}")
                         elif data['event'] == 'start':
                             stream_sid = data['start']['streamSid']
                             logger.info(f"Incoming stream has started {stream_sid}")
@@ -226,18 +317,17 @@ class WebSocketService:
                         if response.get('type') == 'session.created':
                             current_session_id = response.get('session', {}).get('id')
                             logger.info(f"Session created with ID: {current_session_id}")
+                            # Update transcription session with the actual session ID
+                            if call_sid:
+                                session_data = self.transcription_service.active_sessions.get(call_sid)
+                                if session_data:
+                                    session_data['session_id'] = current_session_id
                         
-                        # Handle text responses for transcription
-                        if response.get('type') == 'response.content.delta' and response.get('delta', {}).get('type') == 'text':
-                            text_content = response['delta']['text']
-                            if text_content and call_sid:
-                                await self.store_transcription(
-                                    call_sid=call_sid,
-                                    speaker="assistant",
-                                    text=text_content,
-                                    session_id=current_session_id
-                                )
+                        # Handle all OpenAI events through the new event handler
+                        if call_sid:
+                            await self.handle_openai_events(response, call_sid, current_session_id)
                         
+                        # Handle audio responses
                         if response.get('type') == 'response.audio.delta' and 'delta' in response:
                             audio_payload = base64.b64encode(base64.b64decode(response['delta'])).decode('utf-8')
                             audio_delta = {
@@ -258,8 +348,8 @@ class WebSocketService:
                             
                             await self.send_mark(websocket, stream_sid, mark_queue)
                         
+                        # Handle interruptions
                         if response.get('type') == 'input_audio_buffer.speech_started':
-                            logger.info("Speech started detected")
                             if last_assistant_item:
                                 await self.handle_speech_started_event(
                                     openai_ws, websocket, stream_sid,
@@ -271,10 +361,12 @@ class WebSocketService:
                         
                         # Handle session end
                         if response.get('type') == 'session.ended':
-                            if current_session_id:
+                            if current_session_id and call_sid:
                                 async with self.prisma_service:
                                     await self.prisma_service.update_session_status(current_session_id, "completed")
+                                await self.transcription_service.finalize_session(call_sid)
                             logger.info("Session ended")
+                            
                 except Exception as e:
                     logger.error(f"Error in send_to_twilio: {str(e)}")
 
