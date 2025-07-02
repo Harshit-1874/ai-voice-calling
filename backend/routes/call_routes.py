@@ -91,3 +91,175 @@ async def get_call_details(call_sid: str):
     logger.info("="*50)
     logger.info(f"Getting call details for: {call_sid}")
     return await call_controller.get_call_details(call_sid)
+
+@router.get("/transcriptions")
+async def get_all_transcriptions():
+    """Get all transcriptions (active and completed)."""
+    try:
+        transcription_service = websocket_service.get_transcription_service()
+        transcriptions = transcription_service.get_all_transcriptions()
+        
+        # Convert to serializable format
+        result = {}
+        for call_sid, transcription in transcriptions.items():
+            result[call_sid] = transcription.to_dict()
+        
+        return {
+            "success": True,
+            "transcriptions": result,
+            "count": len(result)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting all transcriptions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/transcriptions/{call_sid}")
+async def get_call_transcription(call_sid: str):
+    """Get transcription for a specific call."""
+    try:
+        transcription_service = websocket_service.get_transcription_service()
+        transcription = transcription_service.get_call_transcription(call_sid)
+        
+        if not transcription:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        
+        return {
+            "success": True,
+            "transcription": transcription.to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting transcription for call {call_sid}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/transcriptions/{call_sid}/text")
+async def get_call_transcription_text(
+    call_sid: str, 
+    include_timestamps: bool = Query(False, description="Include timestamps in the text")
+):
+    """Get transcription as formatted text."""
+    try:
+        transcription_service = websocket_service.get_transcription_service()
+        text = transcription_service.get_transcription_text(call_sid, include_timestamps)
+        
+        if text is None:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        
+        return Response(content=text, media_type="text/plain")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting transcription text for call {call_sid}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/transcriptions/{call_sid}/json")
+async def get_call_transcription_json(call_sid: str):
+    """Get transcription as JSON file."""
+    try:
+        transcription_service = websocket_service.get_transcription_service()
+        json_data = transcription_service.export_transcription_json(call_sid)
+        
+        if json_data is None:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        
+        return Response(
+            content=json_data, 
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=transcription_{call_sid}.json"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting transcription JSON for call {call_sid}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/transcriptions/{call_sid}/summary")
+async def get_call_transcription_summary(call_sid: str):
+    """Get a summary of the call transcription."""
+    try:
+        transcription_service = websocket_service.get_transcription_service()
+        transcription = transcription_service.get_call_transcription(call_sid)
+        
+        if not transcription:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        
+        # Calculate statistics
+        total_entries = len(transcription.entries)
+        final_entries = len([e for e in transcription.entries if e.is_final])
+        user_entries = len([e for e in transcription.entries if e.speaker.value == "user" and e.is_final])
+        assistant_entries = len([e for e in transcription.entries if e.speaker.value == "assistant" and e.is_final])
+        
+        # Calculate word counts
+        user_words = sum(len(e.text.split()) for e in transcription.entries 
+                        if e.speaker.value == "user" and e.is_final)
+        assistant_words = sum(len(e.text.split()) for e in transcription.entries 
+                             if e.speaker.value == "assistant" and e.is_final)
+        
+        # Calculate average confidence if available
+        confidence_entries = [e for e in transcription.entries if e.confidence is not None and e.is_final]
+        avg_confidence = (sum(e.confidence for e in confidence_entries) / len(confidence_entries)) if confidence_entries else None
+        
+        summary = {
+            "call_sid": call_sid,
+            "start_time": transcription.start_time.isoformat(),
+            "end_time": transcription.end_time.isoformat() if transcription.end_time else None,
+            "duration_seconds": transcription.total_duration,
+            "is_active": call_sid in transcription_service.active_transcriptions,
+            "statistics": {
+                "total_entries": total_entries,
+                "final_entries": final_entries,
+                "user_entries": user_entries,
+                "assistant_entries": assistant_entries,
+                "user_words": user_words,
+                "assistant_words": assistant_words,
+                "total_words": user_words + assistant_words,
+                "average_confidence": round(avg_confidence, 3) if avg_confidence else None
+            }
+        }
+        
+        return {
+            "success": True,
+            "summary": summary
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting transcription summary for call {call_sid}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.delete("/transcriptions/{call_sid}")
+async def delete_call_transcription(call_sid: str):
+    """Delete a call transcription."""
+    try:
+        transcription_service = websocket_service.get_transcription_service()
+        
+        # Check if transcription exists
+        transcription = transcription_service.get_call_transcription(call_sid)
+        if not transcription:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        
+        # Remove from completed transcriptions (don't delete active ones)
+        if call_sid in transcription_service.completed_transcriptions:
+            del transcription_service.completed_transcriptions[call_sid]
+            logger.info(f"Deleted transcription for call {call_sid}")
+            
+            return {
+                "success": True,
+                "message": f"Transcription for call {call_sid} has been deleted"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Cannot delete active transcription")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting transcription for call {call_sid}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+

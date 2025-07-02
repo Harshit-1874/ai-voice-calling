@@ -361,6 +361,37 @@ class PrismaService:
             logger.error(f"Error adding transcription: {str(e)}")
             raise
 
+    async def add_transcriptions_batch(self, transcriptions: List[Dict[str, Any]]):
+        """Add multiple transcriptions in a batch for better performance"""
+        try:
+            await self.ensure_connected()
+            
+            # Prepare data for batch creation
+            transcription_data = []
+            for t in transcriptions:
+                transcription_data.append({
+                    'callLogId': t['call_log_id'],
+                    'sessionId': t.get('session_id'),
+                    'speaker': t['speaker'],
+                    'text': t['text'],
+                    'confidence': t.get('confidence'),
+                    'isFinal': t.get('is_final', True),
+                    'timestamp': t.get('timestamp', datetime.now())
+                })
+            
+            # Use create_many for batch insertion
+            result = await self.prisma.transcription.create_many(
+                data=transcription_data,
+                skip_duplicates=True
+            )
+            
+            logger.info(f"Batch created {result.count} transcriptions")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error adding transcriptions batch: {str(e)}")
+            raise
+
     async def get_transcriptions_for_call(self, call_log_id: int):
         """Get all transcriptions for a call"""
         try:
@@ -373,6 +404,21 @@ class PrismaService:
         except Exception as e:
             logger.error(f"Error getting transcriptions: {str(e)}")
             raise
+
+    async def get_full_conversation_text(self, call_log_id: int) -> str:
+        """Get the full conversation as formatted text"""
+        try:
+            transcriptions = await self.get_transcriptions_for_call(call_log_id)
+            conversation_lines = []
+            
+            for t in transcriptions:
+                speaker_label = "User" if t.speaker == "user" else "Assistant"
+                conversation_lines.append(f"{speaker_label}: {t.text}")
+            
+            return "\n".join(conversation_lines)
+        except Exception as e:
+            logger.error(f"Error getting full conversation text: {str(e)}")
+            return ""
 
     # Conversation Analysis Operations
     async def create_conversation_analysis(self, call_log_id: int, summary: str = None, 
@@ -441,4 +487,54 @@ class PrismaService:
             return record
         except Exception as e:
             logger.error(f"Error upserting HubspotTempData: {str(e)}")
+            raise
+
+    # Additional utility methods for transcription management
+    async def get_transcription_summary(self, call_log_id: int) -> Dict[str, Any]:
+        """Get summary statistics for transcriptions of a call"""
+        try:
+            await self.ensure_connected()
+            
+            total_transcriptions = await self.prisma.transcription.count(
+                where={'callLogId': call_log_id}
+            )
+            
+            user_transcriptions = await self.prisma.transcription.count(
+                where={'callLogId': call_log_id, 'speaker': 'user'}
+            )
+            
+            assistant_transcriptions = await self.prisma.transcription.count(
+                where={'callLogId': call_log_id, 'speaker': 'assistant'}
+            )
+            
+            # Get word counts
+            transcriptions = await self.get_transcriptions_for_call(call_log_id)
+            total_words = sum(len(t.text.split()) for t in transcriptions)
+            user_words = sum(len(t.text.split()) for t in transcriptions if t.speaker == 'user')
+            assistant_words = sum(len(t.text.split()) for t in transcriptions if t.speaker == 'assistant')
+            
+            return {
+                'total_transcriptions': total_transcriptions,
+                'user_transcriptions': user_transcriptions,
+                'assistant_transcriptions': assistant_transcriptions,
+                'total_words': total_words,
+                'user_words': user_words,
+                'assistant_words': assistant_words,
+                'conversation_length': len(transcriptions)
+            }
+        except Exception as e:
+            logger.error(f"Error getting transcription summary: {str(e)}")
+            return {}
+
+    async def delete_transcriptions_for_call(self, call_log_id: int):
+        """Delete all transcriptions for a specific call (useful for cleanup)"""
+        try:
+            await self.ensure_connected()
+            result = await self.prisma.transcription.delete_many(
+                where={'callLogId': call_log_id}
+            )
+            logger.info(f"Deleted {result.count} transcriptions for call {call_log_id}")
+            return result.count
+        except Exception as e:
+            logger.error(f"Error deleting transcriptions for call: {str(e)}")
             raise
