@@ -88,44 +88,35 @@ class TranscriptionBuffer:
         self.call_log_id = call_log_id
     
     async def flush_to_database(self, prisma_service: PrismaService):
-        """Save all buffered transcriptions to the database"""
+        """Save all buffered transcriptions as a single entry to the database"""
         if not self.transcriptions or not self.call_log_id:
             logger.warning(f"No transcriptions to save or missing call_log_id for call {self.call_sid}")
             return
-        
+
         try:
             async with prisma_service:
-                saved_count = 0
-                for transcription in self.transcriptions:
-                    try:
-                        await prisma_service.add_transcription(
-                            call_log_id=self.call_log_id,
-                            speaker=transcription['speaker'],
-                            text=transcription['text'],
-                            confidence=transcription['confidence'],
-                            session_id=self.session_id,
-                            is_final=transcription['is_final']
-                        )
-                        saved_count += 1
-                    except Exception as e:
-                        logger.error(f"Error saving individual transcription: {str(e)}")
-                        # Try without session_id if that's causing the issue
-                        try:
-                            await prisma_service.add_transcription(
-                                call_log_id=self.call_log_id,
-                                speaker=transcription['speaker'],
-                                text=transcription['text'],
-                                confidence=transcription['confidence'],
-                                session_id=None,
-                                is_final=transcription['is_final']
-                            )
-                            saved_count += 1
-                            logger.info(f"Saved transcription without session_id")
-                        except Exception as e2:
-                            logger.error(f"Error saving transcription without session_id: {str(e2)}")
-                
-                logger.info(f"Successfully saved {saved_count}/{len(self.transcriptions)} transcriptions for call {self.call_sid}")
-                
+                # Prepare the conversation as a list of dicts
+                conversation = [
+                    {
+                        "speaker": t["speaker"],
+                        "text": t["text"],
+                        "confidence": t.get("confidence"),
+                        "timestamp": t.get("timestamp").isoformat() if t.get("timestamp") else None,
+                        "is_final": t.get("is_final", True)
+                    }
+                    for t in self.transcriptions
+                ]
+                logger.info(f"Flushing transcriptions to database for call {self.call_sid} {'x'*50}")
+                # Save as a single transcription entry (adjust field name as per your schema)
+                await prisma_service.add_transcription(
+                    call_log_id=self.call_log_id,
+                    speaker="conversation",
+                    text=json.dumps(conversation),  # Save as JSON string
+                    confidence=None,
+                    session_id=self.session_id,
+                    is_final=True
+                )
+                logger.info(f"Saved full conversation as a single DB entry for call {self.call_sid}")
         except Exception as e:
             logger.error(f"Error flushing transcriptions to database for call {self.call_sid}: {str(e)}")
     
@@ -445,14 +436,14 @@ class WebSocketService:
                 call_log = await self.prisma_service.get_call_log(call_sid)
                 if call_log:
                     # Save transcription directly to database
-                    await self.prisma_service.add_transcription(
-                        call_log_id=call_log.id,
-                        speaker=speaker,
-                        text=text,
-                        confidence=confidence,
-                        session_id=None,  # We'll handle session linking separately
-                        is_final=True
-                    )
+                    # await self.prisma_service.add_transcription(
+                    #     call_log_id=call_log.id,
+                    #     speaker=speaker,
+                    #     text=text,
+                    #     confidence=confidence,
+                    #     session_id=None,  # We'll handle session linking separately
+                    #     is_final=True
+                    # )
                     logger.info(f"Saved transcription to database: {speaker} - {text[:50]}...")
                 else:
                     logger.warning(f"Call log not found for {call_sid}, cannot save transcription")
@@ -504,26 +495,26 @@ class WebSocketService:
             logger.info(f"Using transcription call_sid: {transcription_call_sid}")
             
             # First, transfer buffer data to transcription service if needed
-            if transcription_call_sid in self.transcription_buffers:
-                buffer = self.transcription_buffers[transcription_call_sid]
-                logger.info(f"Transferring {buffer.get_transcription_count()} transcriptions from buffer to transcription service for call {transcription_call_sid}")
+            # if transcription_call_sid in self.transcription_buffers:
+            #     buffer = self.transcription_buffers[transcription_call_sid]
+            #     logger.info(f"Transferring {buffer.get_transcription_count()} transcriptions from buffer to transcription service for call {transcription_call_sid}")
                 
-                # Ensure transcription service has an active transcription for this call
-                if transcription_call_sid not in self.transcription_service.active_transcriptions:
-                    self.transcription_service.start_call_transcription(transcription_call_sid)
+            #     # Ensure transcription service has an active transcription for this call
+            #     if transcription_call_sid not in self.transcription_service.active_transcriptions:
+            #         self.transcription_service.start_call_transcription(transcription_call_sid)
                 
-                # Transfer buffer entries to transcription service
-                for transcription in buffer.transcriptions:
-                    speaker = SpeakerType.USER if transcription['speaker'] == 'user' else SpeakerType.ASSISTANT
-                    self.transcription_service.add_transcription_entry(
-                        call_sid=transcription_call_sid,
-                        speaker=speaker,
-                        text=transcription['text'],
-                        confidence=transcription.get('confidence'),
-                        is_final=transcription.get('is_final', True)
-                    )
+            #     # Transfer buffer entries to transcription service
+            #     for transcription in buffer.transcriptions:
+            #         speaker = SpeakerType.USER if transcription['speaker'] == 'user' else SpeakerType.ASSISTANT
+            #         self.transcription_service.add_transcription_entry(
+            #             call_sid=transcription_call_sid,
+            #             speaker=speaker,
+            #             text=transcription['text'],
+            #             confidence=transcription.get('confidence'),
+            #             is_final=transcription.get('is_final', True)
+            #         )
                 
-                logger.info(f"Transferred {len(buffer.transcriptions)} transcriptions to transcription service")
+            #     logger.info(f"Transferred {len(buffer.transcriptions)} transcriptions to transcription service")
             
             # Now end the transcription service properly
             if transcription_call_sid in self.transcription_service.active_transcriptions:

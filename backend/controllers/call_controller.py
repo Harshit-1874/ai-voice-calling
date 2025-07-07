@@ -200,6 +200,7 @@ class CallController:
                     }
                 else:
                     logger.warning(f"No transcriptions found in database for call {call_sid}")
+                    self.websocket_service.finalize_call_transcriptions(call_sid)
                     return {"success": False, "error": "No transcriptions found in database"}
                     
         except Exception as e:
