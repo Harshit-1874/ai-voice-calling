@@ -1,4 +1,4 @@
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 import logging
 from typing import Dict, Any
 from services.twilio_service import TwilioService
@@ -108,7 +108,7 @@ class CallController:
                 to_number=form_data.get("To", "")
             )
             
-            return {"twiml": response}
+            return Response(content=str(response), media_type="application/xml")
             
         except Exception as e:
             logger.error(f"Error handling incoming call: {str(e)}")
