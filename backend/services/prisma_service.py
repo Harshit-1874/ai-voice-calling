@@ -306,7 +306,26 @@ class PrismaService:
             raise
 
     async def update_session_status(self, session_id: str, status: str, duration: int = None):
-        """Update session status"""
+        """Update session status by session ID (the primary key)"""
+        try:
+            await self.ensure_connected()
+            update_data = {'status': status}
+            if duration is not None:
+                update_data['duration'] = duration
+            if status in ['completed', 'failed']:
+                update_data['endTime'] = datetime.now()
+            session = await self.prisma.session.update(
+                where={'id': session_id},
+                data=update_data
+            )
+            logger.info(f"Updated session {session_id} status to: {status}")
+            return session
+        except Exception as e:
+            logger.error(f"Error updating session status: {str(e)}")
+            raise
+
+    async def update_session_status_by_session_id(self, session_id: str, status: str, duration: int = None):
+        """Update session status by sessionId field"""
         try:
             await self.ensure_connected()
             update_data = {'status': status}
@@ -318,10 +337,10 @@ class PrismaService:
                 where={'sessionId': session_id},
                 data=update_data
             )
-            logger.info(f"Updated session {session_id} status to: {status}")
+            logger.info(f"Updated session by sessionId {session_id} status to: {status}")
             return session
         except Exception as e:
-            logger.error(f"Error updating session status: {str(e)}")
+            logger.error(f"Error updating session status by sessionId: {str(e)}")
             raise
 
     async def link_session_to_call(self, session_id: str, call_sid: str):
@@ -336,6 +355,14 @@ class PrismaService:
             return call_log
         except Exception as e:
             logger.error(f"Error linking session to call: {str(e)}")
+            # Try to get more details about the error
+            try:
+                await self.ensure_connected()
+                call_log = await self.prisma.calllog.find_unique(where={'callSid': call_sid})
+                session = await self.prisma.session.find_unique(where={'id': session_id})
+                logger.error(f"Call log exists: {call_log is not None}, Session exists: {session is not None}")
+            except Exception as debug_error:
+                logger.error(f"Debug error: {str(debug_error)}")
             raise
 
     # Transcription Operations
@@ -537,4 +564,22 @@ class PrismaService:
             return result.count
         except Exception as e:
             logger.error(f"Error deleting transcriptions for call: {str(e)}")
+            raise
+
+    async def get_calls_by_phone_number(self, phone_number: str, limit: int = 3):
+        """Get previous calls to a specific phone number"""
+        try:
+            await self.ensure_connected()
+            calls = await self.prisma.calllog.find_many(
+                where={'toNumber': phone_number},
+                take=limit,
+                order={'startTime': 'desc'},
+                include={
+                    'contact': True,
+                    'session': True
+                }
+            )
+            return calls
+        except Exception as e:
+            logger.error(f"Error getting calls by phone number: {str(e)}")
             raise

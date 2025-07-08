@@ -37,9 +37,16 @@ class TwilioService:
             # Setup WebSocket connection
             connect = Connect()
             stream_url = f'wss://{ws_host}/media-stream'
+            params = []
             if call_sid:
-                stream_url += f'?call_sid={call_sid}'
-            logger.info(f"WebSocket stream URL: {stream_url}")
+                params.append(f'call_sid={call_sid}')
+                logger.info(f"Adding call_sid to WebSocket URL: {call_sid}")
+            if to_number:
+                params.append(f'to_number={to_number}')
+                logger.info(f"Adding to_number to WebSocket URL: {to_number}")
+            if params:
+                stream_url += '?' + '&'.join(params)
+            logger.info(f"Final WebSocket stream URL: {stream_url}")
             
             # Configure stream with parameters
             stream = Stream(url=stream_url)
@@ -47,6 +54,7 @@ class TwilioService:
             stream.parameter(name="To", value=to_number)
             if call_sid:
                 stream.parameter(name="CallSid", value=call_sid)
+                logger.info(f"Added CallSid parameter to stream: {call_sid}")
             connect.append(stream)
             response.append(connect)
             

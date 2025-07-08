@@ -56,12 +56,17 @@ class CallTranscription:
         }
 
 class TranscriptionService:
-    """Service for handling call transcriptions."""
+    """Service for handling call transcriptions with database persistence."""
     
-    def __init__(self):
+    def __init__(self, prisma_service=None):
         self.active_transcriptions: Dict[str, CallTranscription] = {}
         self.completed_transcriptions: Dict[str, CallTranscription] = {}
-        logger.info("TranscriptionService initialized")
+        self.prisma_service = prisma_service
+        logger.info("TranscriptionService initialized with database persistence")
+    
+    def set_prisma_service(self, prisma_service):
+        """Set the Prisma service for database operations."""
+        self.prisma_service = prisma_service
     
     def start_call_transcription(self, call_sid: str) -> CallTranscription:
         """Start transcription for a new call."""
@@ -118,8 +123,8 @@ class TranscriptionService:
             logger.error(f"Error adding transcription entry for call {call_sid}: {str(e)}")
             raise
     
-    def end_call_transcription(self, call_sid: str) -> Optional[CallTranscription]:
-        """End transcription for a call and move it to completed."""
+    async def end_call_transcription(self, call_sid: str) -> Optional[CallTranscription]:
+        """End transcription for a call, save to database, and move it to completed."""
         try:
             if call_sid not in self.active_transcriptions:
                 logger.warning(f"No active transcription found for call {call_sid}")
@@ -132,6 +137,10 @@ class TranscriptionService:
                 transcription.total_duration = (
                     transcription.end_time - transcription.start_time
                 ).total_seconds()
+            
+            # Save to database if Prisma service is available
+            if self.prisma_service:
+                await self._save_transcription_to_database(call_sid, transcription)
             
             # Move to completed transcriptions
             self.completed_transcriptions[call_sid] = transcription
@@ -146,8 +155,135 @@ class TranscriptionService:
             logger.error(f"Error ending transcription for call {call_sid}: {str(e)}")
             raise
     
+    async def _save_transcription_to_database(self, call_sid: str, transcription: CallTranscription):
+        """Save transcription entries to the database."""
+        try:
+            if not self.prisma_service:
+                logger.warning("No Prisma service available for saving transcriptions")
+                return
+            
+            # Get the call log ID
+            call_log = await self.prisma_service.get_call_log(call_sid)
+            if not call_log:
+                logger.error(f"Call log not found for {call_sid}, cannot save transcriptions")
+                return
+            
+            # Prepare transcriptions for batch insertion
+            transcription_data = []
+            for entry in transcription.entries:
+                if entry.is_final:  # Only save final transcriptions
+                    transcription_data.append({
+                        'call_log_id': call_log.id,
+                        'speaker': entry.speaker.value,
+                        'text': entry.text,
+                        'confidence': entry.confidence,
+                        'is_final': entry.is_final,
+                        'timestamp': entry.timestamp
+                    })
+            
+            if transcription_data:
+                # Use batch insertion for better performance
+                await self.prisma_service.add_transcriptions_batch(transcription_data)
+                logger.info(f"Saved {len(transcription_data)} transcription entries to database for call {call_sid}")
+            else:
+                logger.warning(f"No final transcriptions to save for call {call_sid}")
+                
+        except Exception as e:
+            logger.error(f"Error saving transcriptions to database for call {call_sid}: {str(e)}")
+    
+    async def get_previous_call_context(self, phone_number: str, limit: int = 3) -> str:
+        """Get context from previous calls to the same phone number."""
+        try:
+            if not self.prisma_service:
+                logger.warning("No Prisma service available for retrieving call context")
+                return ""
+            
+            # Get previous calls to this phone number
+            previous_calls = await self.prisma_service.get_calls_by_phone_number(phone_number, limit)
+            
+            if not previous_calls:
+                logger.info(f"No previous calls found for {phone_number}")
+                return ""
+            
+            context_parts = []
+            for call in previous_calls:
+                if call.id:
+                    # Get transcriptions for this call
+                    transcriptions = await self.prisma_service.get_transcriptions_for_call(call.id)
+                    if transcriptions:
+                        # Format the conversation
+                        conversation_lines = []
+                        for t in transcriptions:
+                            speaker_label = "User" if t.speaker == "user" else "Assistant"
+                            conversation_lines.append(f"{speaker_label}: {t.text}")
+                        
+                        call_context = f"Previous call on {call.startTime.strftime('%Y-%m-%d %H:%M')}:\n" + "\n".join(conversation_lines)
+                        context_parts.append(call_context)
+            
+            if context_parts:
+                full_context = "\n\n".join(context_parts)
+                logger.info(f"Retrieved context from {len(previous_calls)} previous calls for {phone_number}")
+                return full_context
+            
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error getting previous call context for {phone_number}: {str(e)}")
+            return ""
+    
+    async def get_call_confidence_score(self, call_sid: str) -> Dict[str, Any]:
+        """Calculate confidence scores for a call's transcriptions."""
+        try:
+            if not self.prisma_service:
+                return {"error": "No Prisma service available"}
+            
+            call_log = await self.prisma_service.get_call_log(call_sid)
+            if not call_log:
+                return {"error": "Call not found"}
+            
+            transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
+            
+            if not transcriptions:
+                return {"error": "No transcriptions found"}
+            
+            # Calculate confidence statistics
+            confidence_values = [t.confidence for t in transcriptions if t.confidence is not None]
+            
+            if not confidence_values:
+                return {
+                    "average_confidence": None,
+                    "min_confidence": None,
+                    "max_confidence": None,
+                    "confidence_count": 0,
+                    "total_transcriptions": len(transcriptions)
+                }
+            
+            avg_confidence = sum(confidence_values) / len(confidence_values)
+            min_confidence = min(confidence_values)
+            max_confidence = max(confidence_values)
+            
+            # Calculate confidence by speaker
+            user_confidences = [t.confidence for t in transcriptions if t.speaker == "user" and t.confidence is not None]
+            assistant_confidences = [t.confidence for t in transcriptions if t.speaker == "assistant" and t.confidence is not None]
+            
+            result = {
+                "average_confidence": round(avg_confidence, 3),
+                "min_confidence": round(min_confidence, 3),
+                "max_confidence": round(max_confidence, 3),
+                "confidence_count": len(confidence_values),
+                "total_transcriptions": len(transcriptions),
+                "user_average_confidence": round(sum(user_confidences) / len(user_confidences), 3) if user_confidences else None,
+                "assistant_average_confidence": round(sum(assistant_confidences) / len(assistant_confidences), 3) if assistant_confidences else None
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error calculating confidence score for call {call_sid}: {str(e)}")
+            return {"error": str(e)}
+    
     def get_call_transcription(self, call_sid: str) -> Optional[CallTranscription]:
-        """Get transcription for a specific call."""
+        """Get transcription for a specific call from memory."""
         # Check active transcriptions first
         if call_sid in self.active_transcriptions:
             return self.active_transcriptions[call_sid]
@@ -158,8 +294,51 @@ class TranscriptionService:
         
         return None
     
+    async def get_call_transcription_from_db(self, call_sid: str) -> Optional[Dict[str, Any]]:
+        """Get transcription for a specific call from database."""
+        try:
+            if not self.prisma_service:
+                return None
+            
+            call_log = await self.prisma_service.get_call_log(call_sid)
+            if not call_log:
+                return None
+            
+            transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
+            
+            if not transcriptions:
+                return None
+            
+            # Convert to CallTranscription format
+            entries = []
+            for t in transcriptions:
+                speaker = SpeakerType.USER if t.speaker == "user" else SpeakerType.ASSISTANT
+                entry = TranscriptionEntry(
+                    call_sid=call_sid,
+                    speaker=speaker,
+                    text=t.text,
+                    timestamp=t.timestamp,
+                    confidence=t.confidence,
+                    is_final=t.isFinal
+                )
+                entries.append(entry)
+            
+            transcription = CallTranscription(
+                call_sid=call_sid,
+                start_time=call_log.startTime,
+                end_time=call_log.endTime,
+                entries=entries,
+                total_duration=call_log.duration
+            )
+            
+            return transcription.to_dict()
+            
+        except Exception as e:
+            logger.error(f"Error getting transcription from database for call {call_sid}: {str(e)}")
+            return None
+    
     def get_all_transcriptions(self) -> Dict[str, CallTranscription]:
-        """Get all transcriptions (active and completed)."""
+        """Get all transcriptions (active and completed) from memory."""
         all_transcriptions = {}
         all_transcriptions.update(self.active_transcriptions)
         all_transcriptions.update(self.completed_transcriptions)
@@ -169,6 +348,7 @@ class TranscriptionService:
         """Process OpenAI WebSocket message and extract transcription data."""
         try:
             message_type = message.get("type")
+            logger.debug(f"Processing message type '{message_type}' for call {call_sid}")
             
             if message_type == "conversation.item.created":
                 self._handle_conversation_item_created(call_sid, message)
@@ -180,6 +360,8 @@ class TranscriptionService:
                 self._handle_input_transcription_completed(call_sid, message)
             elif message_type == "conversation.item.input_audio_transcription.failed":
                 self._handle_input_transcription_failed(call_sid, message)
+            else:
+                logger.debug(f"Unhandled message type '{message_type}' for call {call_sid}")
                 
         except Exception as e:
             logger.error(f"Error processing OpenAI message for call {call_sid}: {str(e)}")
@@ -223,11 +405,13 @@ class TranscriptionService:
         """Handle completed audio transcription."""
         try:
             transcript = message.get("transcript", "")
+            confidence = message.get("confidence")
             if transcript:
                 self.add_transcription_entry(
                     call_sid, 
                     SpeakerType.ASSISTANT, 
                     transcript, 
+                    confidence=confidence,
                     is_final=True
                 )
                 
@@ -238,11 +422,13 @@ class TranscriptionService:
         """Handle completed input audio transcription."""
         try:
             transcript = message.get("transcript", "")
+            confidence = message.get("confidence")
             if transcript:
                 self.add_transcription_entry(
                     call_sid, 
                     SpeakerType.USER, 
                     transcript, 
+                    confidence=confidence,
                     is_final=True
                 )
                 
