@@ -1,9 +1,8 @@
 import os
 import logging
-import time
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException as ContactsApiException, SimplePublicObjectInput
-from hubspot.crm.contacts import Filter, FilterGroup, PublicObjectSearchRequest
+from hubspot.crm.objects.notes import SimplePublicObjectInput as NoteInput
 from config import HUBSPOT_ACCESS_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -43,36 +42,16 @@ class HubspotService:
             logger.error(f"Error updating contact {contact_id}: {e}")
             raise
 
-    from hubspot.crm.objects.notes import SimplePublicObjectInput
-    from hubspot.crm.associations import PublicAssociation
-
-    def create_note_for_contact(self, phone_number, note_content):
+    def create_note_for_contact(self, contact_id, note_content):
         try:
-            filters = Filter(property_name="phone", operator="EQ", value=phone_number)
-            filter_group = FilterGroup(filters=[filters])
-            search_req = PublicObjectSearchRequest(filter_groups=[filter_group])
-
-            search_res = self.client.crm.contacts.search_api.do_search(
-                public_object_search_request=search_req
-            )
-            if not search_res.results:
-                logger.warning(f"No contact found with phone {phone_number}")
-                return
-            
-            contact_id = search_res.results[0].id
-        
-            input_data = SimplePublicObjectInput(
-                properties={"last_call_note": note_content}
-            )
-
-            self.client.crm.contacts.basic_api.update(
-                contact_id,
-                simple_public_object_input=input_data
+            note_input = NoteInput(properties={"hs_note_body": note_content})
+            note = self.client.crm.objects.notes.basic_api.create(simple_public_object_input=note_input)
+            # Associate note with contact
+            self.client.crm.objects.notes.associations_api.create(
+                note.id, "contact", contact_id, "note_to_contact"
             )
             logger.info(f"Created note for contact {contact_id}")
         except Exception as e:
             logger.error(f"Error creating note for contact {contact_id}: {e}")
             raise
-
-
 
