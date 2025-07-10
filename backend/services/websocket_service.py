@@ -5,6 +5,7 @@ import websockets
 import logging
 from config import OPENAI_API_KEY
 from services.prisma_service import PrismaService
+from services.hubspot_service import HubspotService
 from services.transcription_service import TranscriptionService, SpeakerType
 from typing import List, Dict, Any
 from datetime import datetime
@@ -87,7 +88,7 @@ class TranscriptionBuffer:
         self.session_id = session_id
         self.call_log_id = call_log_id
     
-    async def flush_to_database(self, prisma_service: PrismaService):
+    async def flush_to_database(self, prisma_service: PrismaService, hubspot_service=None):
         """Save all buffered transcriptions as a single entry to the database"""
         if not self.transcriptions or not self.call_log_id:
             logger.warning(f"No transcriptions to save or missing call_log_id for call {self.call_sid}")
@@ -117,6 +118,27 @@ class TranscriptionBuffer:
                     is_final=True
                 )
                 logger.info(f"Saved full conversation as a single DB entry for call {self.call_sid}")
+
+                if hubspot_service:
+                    call_log = await prisma_service.get_call_log(self.call_sid)
+                    if call_log and call_log.toNumber:
+                        phone_number = call_log.toNumber
+                        contacts = hubspot_service.get_contacts(limit=1000)
+                        contact_id = None
+                        for contact in contacts:
+                            if contact.get('properties', {}).get('phone') == phone_number:
+                                contact_id = contact['id']
+                                break
+                        if contact_id:
+                            conversation_text = "\n".join(
+                                [f"{t['speaker'].capitalize()}: {t['text']}" for t in self.transcriptions]
+                            )
+                            hubspot_service.create_note_for_contact(contact_id, conversation_text)
+                            logger.info(f"Pushed transcription as note to HubSpot for contact {contact_id}")
+                        else:
+                            logger.warning(f"No HubSpot contact found for phone number {phone_number}")
+                    else:
+                        logger.warning(f"No call log or phone number found for call_log_id {self.call_log_id}")
         except Exception as e:
             logger.error(f"Error flushing transcriptions to database for call {self.call_sid}: {str(e)}")
     
@@ -138,6 +160,7 @@ class WebSocketService:
             raise ValueError("OpenAI API key not found in environment variables")
         self.api_key = OPENAI_API_KEY
         self.prisma_service = PrismaService()
+        self.hubspot_service = HubspotService()
         self.transcription_service = TranscriptionService(self.prisma_service)
         # Dictionary to store transcription buffers by call_sid
         self.transcription_buffers: Dict[str, TranscriptionBuffer] = {}
@@ -237,6 +260,7 @@ class WebSocketService:
         }
         logger.info('Sending session update')
         logger.info(f'Session update payload: {json.dumps(session_update, indent=2)}')
+        logger.info(f'{to_number=}, {call_sid=}')
         await openai_ws.send(json.dumps(session_update))
         
         # Create session in database and start transcription if call_sid is provided

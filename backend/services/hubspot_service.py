@@ -2,6 +2,7 @@ import os
 import logging
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException as ContactsApiException, SimplePublicObjectInput
+from hubspot.crm.objects.notes import SimplePublicObjectInput as NoteInput
 from config import HUBSPOT_ACCESS_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -39,5 +40,18 @@ class HubspotService:
             logger.info(f"Updated contact {contact_id} status to {status}")
         except ContactsApiException as e:
             logger.error(f"Error updating contact {contact_id}: {e}")
+            raise
+
+    def create_note_for_contact(self, contact_id, note_content):
+        try:
+            note_input = NoteInput(properties={"hs_note_body": note_content})
+            note = self.client.crm.objects.notes.basic_api.create(simple_public_object_input=note_input)
+            # Associate note with contact
+            self.client.crm.objects.notes.associations_api.create(
+                note.id, "contact", contact_id, "note_to_contact"
+            )
+            logger.info(f"Created note for contact {contact_id}")
+        except Exception as e:
+            logger.error(f"Error creating note for contact {contact_id}: {e}")
             raise
 
