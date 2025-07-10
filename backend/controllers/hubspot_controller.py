@@ -23,3 +23,11 @@ class HubspotController:
         except Exception as e:
             logger.error(f"Error updating contact status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+        
+    async def create_note_for_contact(self, contact_id: str, note_content: str):
+        try:
+            self.hubspot_service.create_note_for_contact(contact_id, note_content)
+            return {"status": "success", "contact_id": contact_id, "note_content": note_content}
+        except Exception as e:
+            logger.error(f"Error creating note for contact {contact_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
