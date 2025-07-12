@@ -251,6 +251,33 @@ class PrismaService:
             logger.error(f"Error in update_call_status: {str(e)}")
             return None
 
+    async def update_call_log(self, call_sid: str, conversation_json: str = None, **kwargs):
+        """Update call log with additional data including conversation JSON"""
+        try:
+            await self.ensure_connected()
+            
+            # Prepare update data
+            update_data = {}
+            if conversation_json is not None:
+                update_data['conversationJson'] = conversation_json
+            if kwargs:
+                update_data.update(kwargs)
+            
+            if not update_data:
+                logger.warning("No data provided to update_call_log")
+                return None
+            
+            call_log = await self.prisma.calllog.update(
+                where={'callSid': call_sid},
+                data=update_data
+            )
+            logger.info(f"Updated call log {call_sid} with additional data")
+            return call_log
+            
+        except Exception as e:
+            logger.error(f"Error in update_call_log: {str(e)}")
+            return None
+
     async def get_call_log(self, call_sid: str):
         """Get call log by SID"""
         try:
