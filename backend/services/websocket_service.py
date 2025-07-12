@@ -119,26 +119,16 @@ class TranscriptionBuffer:
                 )
                 logger.info(f"Saved full conversation as a single DB entry for call {self.call_sid}")
 
-                if hubspot_service:
-                    call_log = await prisma_service.get_call_log(self.call_sid)
-                    if call_log and call_log.toNumber:
-                        phone_number = call_log.toNumber
-                        contacts = hubspot_service.get_contacts(limit=1000)
-                        contact_id = None
-                        for contact in contacts:
-                            if contact.get('properties', {}).get('phone') == phone_number:
-                                contact_id = contact['id']
-                                break
-                        if contact_id:
-                            conversation_text = "\n".join(
-                                [f"{t['speaker'].capitalize()}: {t['text']}" for t in self.transcriptions]
-                            )
-                            hubspot_service.create_note_for_contact(contact_id, conversation_text)
-                            logger.info(f"Pushed transcription as note to HubSpot for contact {contact_id}")
-                        else:
-                            logger.warning(f"No HubSpot contact found for phone number {phone_number}")
-                    else:
-                        logger.warning(f"No call log or phone number found for call_log_id {self.call_log_id}")
+                # if hubspot_service:
+                #     call_log = await prisma_service.get_call_log(self.call_sid)
+                #     if call_log and call_log.toNumber:
+                #         conversation_text = "\n".join(
+                #             [f"{t['speaker'].capitalize()}: {t['text']}" for t in self.transcriptions]
+                #         )
+                #         # hubspot_service.create_note_for_contact(call_log.toNumber, conversation_text)
+                #         logger.info(f"Pushed transcription as note to HubSpot for contact {call_log.toNumber}")
+                #     else:
+                #         logger.warning(f"No call log or phone number found for call_log_id {self.call_log_id}")
         except Exception as e:
             logger.error(f"Error flushing transcriptions to database for call {self.call_sid}: {str(e)}")
     
