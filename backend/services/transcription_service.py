@@ -191,6 +191,153 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Error saving transcriptions to database for call {call_sid}: {str(e)}")
     
+    async def _extract_call_context(self, transcriptions, call) -> dict:
+        """Extract meaningful context from transcriptions."""
+        try:
+            context = {
+                'business_info': {},
+                'pain_points': [],
+                'conversation_summary': '',
+                'call_date': call.startTime.strftime('%Y-%m-%d %H:%M')
+            }
+            
+            # Process each transcription entry
+            for t in transcriptions:
+                logger.info(f"Processing transcription entry: {t.text[:50]}... (Speaker: {t.speaker})")
+                text = t.text.lower()
+                speaker = t.speaker.lower()
+                
+                # Skip if this is a JSON conversation entry
+                if t.speaker == "conversation":
+                    try:
+                        # Parse JSON conversation data
+                        conversation_data = json.loads(t.text)
+                        for entry in conversation_data:
+                            entry_text = entry.get('text', '').lower()
+                            entry_speaker = entry.get('speaker', '').lower()
+                            
+                            # Extract business information from user responses
+                            if entry_speaker == 'user':
+                                self._extract_business_info(entry_text, context)
+                                self._extract_pain_points(entry_text, context)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON conversation data: {t.text[:100]}...")
+                        continue
+                else:
+                    # Handle individual transcription entries
+                    if speaker == 'user':
+                        self._extract_business_info(text, context)
+                        self._extract_pain_points(text, context)
+            
+            return context
+            
+        except Exception as e:
+            logger.error(f"Error extracting call context: {str(e)}")
+            return {}
+    
+    def _extract_business_info(self, text: str, context: dict):
+        """Extract business information from text."""
+        text_lower = text.lower()
+        
+        # Business type detection
+        business_types = {
+            'restaurant': ['restaurant', 'cafe', 'café', 'food', 'dining', 'kitchen', 'chef'],
+            'retail': ['shop', 'store', 'retail', 'clothing', 'fashion', 'boutique'],
+            'service': ['service', 'consulting', 'agency', 'freelance', 'contractor'],
+            'technology': ['tech', 'software', 'app', 'digital', 'online', 'web'],
+            'healthcare': ['clinic', 'hospital', 'medical', 'health', 'doctor', 'pharmacy'],
+            'manufacturing': ['factory', 'manufacturing', 'production', 'industrial'],
+            'construction': ['construction', 'building', 'contractor', 'renovation']
+        }
+        
+        for business_type, keywords in business_types.items():
+            if any(keyword in text_lower for keyword in keywords):
+                context['business_info']['type'] = business_type
+                break
+        
+        # Company name detection (look for capitalized words that might be company names)
+        words = text.split()
+        potential_names = []
+        for word in words:
+            if word[0].isupper() and len(word) > 2 and word.lower() not in ['the', 'and', 'for', 'with', 'from', 'this', 'that']:
+                potential_names.append(word)
+        
+        if potential_names:
+            context['business_info']['potential_name'] = ' '.join(potential_names[:3])  # Take first 3 words
+        
+        # Business size indicators
+        size_indicators = {
+            'small': ['small', 'startup', 'family', 'local', 'independent'],
+            'medium': ['medium', 'growing', 'established', 'team'],
+            'large': ['large', 'corporate', 'chain', 'franchise', 'multiple locations']
+        }
+        
+        for size, keywords in size_indicators.items():
+            if any(keyword in text_lower for keyword in keywords):
+                context['business_info']['size'] = size
+                break
+    
+    def _extract_pain_points(self, text: str, context: dict):
+        """Extract pain points from text."""
+        text_lower = text.lower()
+        
+        pain_point_keywords = {
+            'high_fees': ['expensive', 'high fees', 'costly', 'too much', 'overpriced'],
+            'slow_settlements': ['slow', 'delay', 'waiting', 'settlement', 'payment'],
+            'poor_support': ['support', 'help', 'service', 'response', 'customer service'],
+            'technical_issues': ['problem', 'issue', 'broken', 'not working', 'error'],
+            'limited_features': ['limited', 'missing', 'need more', 'want more'],
+            'complex_setup': ['complicated', 'difficult', 'hard to', 'complex', 'setup']
+        }
+        
+        for pain_point, keywords in pain_point_keywords.items():
+            if any(keyword in text_lower for keyword in keywords):
+                context['pain_points'].append(pain_point)
+    
+    def _create_context_summary(self, business_info: dict, pain_points: list, phone_number: str) -> str:
+        """Create a comprehensive context summary for the AI agent."""
+        summary_parts = []
+        
+        # Business information summary
+        if business_info:
+            summary_parts.append("PREVIOUS CALL CONTEXT:")
+            
+            if 'type' in business_info:
+                summary_parts.append(f"- Business type: {business_info['type'].title()}")
+            
+            if 'potential_name' in business_info:
+                summary_parts.append(f"- Potential company name: {business_info['potential_name']}")
+            
+            if 'size' in business_info:
+                summary_parts.append(f"- Business size: {business_info['size']}")
+        
+        # Pain points summary
+        if pain_points:
+            summary_parts.append("\nPREVIOUS PAIN POINTS IDENTIFIED:")
+            pain_point_descriptions = {
+                'high_fees': "High processing fees",
+                'slow_settlements': "Slow payment settlements",
+                'poor_support': "Poor customer support",
+                'technical_issues': "Technical problems with current system",
+                'limited_features': "Limited features in current solution",
+                'complex_setup': "Complex setup process"
+            }
+            
+            for pain_point in pain_points:
+                if pain_point in pain_point_descriptions:
+                    summary_parts.append(f"- {pain_point_descriptions[pain_point]}")
+        
+        # Instructions for the AI
+        if business_info or pain_points:
+            summary_parts.append("\nINSTRUCTIONS:")
+            summary_parts.append("- Acknowledge this is a follow-up call")
+            summary_parts.append("- Reference previous conversation naturally")
+            summary_parts.append("- Focus on addressing identified pain points")
+            summary_parts.append("- Ask about progress since last call")
+            summary_parts.append("- Be more specific about how Teya can help based on their business type")
+        
+        return "\n".join(summary_parts) if summary_parts else ""
+    
     async def get_previous_call_context(self, phone_number: str, limit: int = 3) -> str:
         """Get context from previous calls to the same phone number."""
         try:
@@ -206,24 +353,34 @@ class TranscriptionService:
                 return ""
             
             context_parts = []
+            business_info = {}
+            pain_points = []
+            
             for call in previous_calls:
                 if call.id:
+                    logger.info(f"Processing previous call {call.id} for {phone_number}")
                     # Get transcriptions for this call
-                    transcriptions = await self.prisma_service.get_transcriptions_for_call(call.id)
-                    if transcriptions:
-                        # Format the conversation
-                        conversation_lines = []
-                        for t in transcriptions:
-                            speaker_label = "User" if t.speaker == "user" else "Assistant"
-                            conversation_lines.append(f"{speaker_label}: {t.text}")
+                    if self.prisma_service:
+                        logger.info(f"Retrieving transcriptions for call {call.id}")
+                    else:
+                        logger.warning("No Prisma service available to retrieve transcriptions")
                         
-                        call_context = f"Previous call on {call.startTime.strftime('%Y-%m-%d %H:%M')}:\n" + "\n".join(conversation_lines)
-                        context_parts.append(call_context)
+                    transcriptions = await self.prisma_service.get_transcriptions_for_call(call.id)
+                    logger.info(f"Found {len(transcriptions)} transcriptions for call {call.id}")
+                    if transcriptions:
+                        # Parse conversation data and extract context
+                        call_context = await self._extract_call_context(transcriptions, call)
+                        if call_context:
+                            context_parts.append(call_context)
+                            
+                            # Extract business information and pain points
+                            business_info.update(call_context.get('business_info', {}))
+                            pain_points.extend(call_context.get('pain_points', []))
             
             if context_parts:
-                full_context = "\n\n".join(context_parts)
+                context_summary = self._create_context_summary(business_info, pain_points, phone_number)
                 logger.info(f"Retrieved context from {len(previous_calls)} previous calls for {phone_number}")
-                return full_context
+                return context_summary
             
             return ""
             

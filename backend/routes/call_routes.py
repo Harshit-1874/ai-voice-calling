@@ -101,6 +101,7 @@ async def twiml(request: Request):
         call_sid=call_sid
     )
     return Response(content=twiml, media_type="text/xml")
+
 @router.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
     """Handle WebSocket connections between Twilio and OpenAI."""
@@ -207,6 +208,22 @@ async def handle_media_stream(websocket: WebSocket):
                     logger.info(f"Using most recent call_sid from database: {call_sid}")
         except Exception as e:
             logger.error(f"Error getting most recent call from database: {str(e)}")
+
+    # If we have a call_sid but no to_number, try to get it from the call log
+    if call_sid and not to_number:
+        try:
+            async with websocket_service.prisma_service:
+                call_log = await websocket_service.prisma_service.get_call_log(call_sid)
+                if call_log and call_log.toNumber:
+                    to_number = call_log.toNumber
+                    logger.info(f"Retrieved to_number from call log: {to_number}")
+                else:
+                    logger.warning(f"Could not find to_number in call log for {call_sid}")
+        except Exception as e:
+            logger.error(f"Error getting to_number from call log: {str(e)}")
+
+    logger.info(f"Final call_sid: {call_sid}")
+    logger.info(f"Final to_number: {to_number}")
 
     try:
         async with websockets.connect(

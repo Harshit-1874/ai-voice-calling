@@ -301,16 +301,25 @@ class WebSocketService:
         # Get previous call context if to_number is provided
         previous_context = ""
         if to_number:
+            logger.info(f"Attempting to get previous call context for: {to_number}")
             previous_context = await self.transcription_service.get_previous_call_context(to_number, limit=2)
             if previous_context:
-                logger.info(f"Found previous call context for {to_number}")
+                logger.info(f"✅ Found previous call context for {to_number}")
+                logger.info(f"Context length: {len(previous_context)} characters")
+                logger.info(f"Context content: {previous_context}")
+            else:
+                logger.info(f"❌ No previous call context found for {to_number}")
+        else:
+            logger.warning("No to_number provided, cannot retrieve context")
         
         # Prepare initial greeting with context
-        greeting_text = "Hello! I'm calling from Teya UK, a leading provider of smart payment solutions for modern businesses. I'd love to learn more about your business and see how we might be able to help you with your payment processing needs. Could you tell me a bit about your business?"
-        
         if previous_context:
-            greeting_text = f"Hello! I'm calling from Teya UK again. I have some context from our previous conversations:\n\n{previous_context}\n\nBased on this, I'd like to continue our discussion about how Teya can help with your payment processing needs. How have things been since we last spoke?"
+            greeting_text = f"Hi! This is Sarah from Teya UK. We spoke recently about your payment processing needs. I have some context from our previous conversations:\n\n{previous_context}\n\nHow have things been since we last spoke? Have you made any progress with your payment processing setup?"
+        else:
+            # Dynamic greeting for new calls
+            greeting_text = "Hi! This is Sarah from Teya UK. I'm calling about payment processing solutions for your business. Is this a good time to talk?"
         
+        logger.info(f"🎯 INITIAL GREETING: {greeting_text}")
         # Send initial greeting
         initial_conversation_item = {
             "type": "conversation.item.create",
