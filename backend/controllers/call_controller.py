@@ -167,6 +167,10 @@ class CallController:
         try:
             logger.info(f"Saving transcriptions for call {call_sid}")
             
+            # First, try to finalize transcriptions from the buffer
+            logger.info(f"Finalizing transcriptions from buffer for call {call_sid}")
+            await self.websocket_service.finalize_call_transcriptions(call_sid)
+            
             # Get the call log to verify it exists
             async with self.prisma_service:
                 call_log = await self.prisma_service.get_call_log(call_sid)
@@ -174,34 +178,31 @@ class CallController:
                     logger.warning(f"Call log not found for {call_sid}")
                     return {"success": False, "error": "Call log not found"}
                 
-                # Check if transcriptions already exist for this call
+                # Check if transcriptions exist for this call (either individual or JSON)
                 existing_transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
+                conversation_json = call_log.conversationJson
+                
                 if existing_transcriptions:
-                    logger.info(f"Transcriptions already exist for call {call_sid} ({len(existing_transcriptions)} entries)")
+                    logger.info(f"Found {len(existing_transcriptions)} individual transcriptions for call {call_sid}")
+                
+                if conversation_json:
+                    logger.info(f"Found conversation JSON for call {call_sid}")
+                    try:
+                        json_data = json.loads(conversation_json)
+                        logger.info(f"Conversation JSON contains {len(json_data)} entries")
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON in conversationJson for call {call_sid}")
+                
+                if existing_transcriptions or conversation_json:
                     return {
                         "success": True, 
-                        "message": f"Transcriptions already saved ({len(existing_transcriptions)} entries)",
-                        "count": len(existing_transcriptions)
-                    }
-                
-                # Since we're now saving transcriptions directly to database as they come in,
-                # we just need to check if any transcriptions exist for this call
-                logger.info(f"Checking for existing transcriptions for call {call_sid}")
-                
-                # Get transcriptions from database
-                transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
-                
-                if transcriptions:
-                    logger.info(f"Found {len(transcriptions)} transcriptions in database for call {call_sid}")
-                    return {
-                        "success": True,
-                        "message": f"Found {len(transcriptions)} transcriptions in database",
-                        "count": len(transcriptions)
+                        "message": f"Transcriptions saved - {len(existing_transcriptions)} individual entries, JSON: {'yes' if conversation_json else 'no'}",
+                        "individual_count": len(existing_transcriptions),
+                        "has_json": bool(conversation_json)
                     }
                 else:
-                    logger.warning(f"No transcriptions found in database for call {call_sid}")
-                    await self.websocket_service.finalize_call_transcriptions(call_sid)
-                    return {"success": False, "error": "No transcriptions found in database"}
+                    logger.warning(f"No transcriptions found for call {call_sid}")
+                    return {"success": False, "error": "No transcriptions found"}
                     
         except Exception as e:
             logger.error(f"Error saving transcriptions for call {call_sid}: {str(e)}")
