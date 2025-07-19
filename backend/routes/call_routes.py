@@ -42,12 +42,18 @@ async def twiml(request: Request):
     from_number = form.get("From")
     to_number = form.get("To")
     ws_host = request.url.hostname or "your-ngrok-domain.ngrok-free.app"
+    
+    logger.info(f"TWiML endpoint called - CallSid: {call_sid}, From: {from_number}, To: {to_number}, Host: {ws_host}")
+    logger.info(f"Form data received: {dict(form)}")
+    
     twiml = twilio_service.create_twiml_response(
         ws_host=ws_host,
         from_number=from_number,
         to_number=to_number,
         call_sid=call_sid
     )
+    
+    logger.info(f"Generated TwiML for call {call_sid}: {twiml}")
     return Response(content=twiml, media_type="text/xml")
 @router.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
@@ -59,20 +65,16 @@ async def handle_media_stream(websocket: WebSocket):
     call_sid = None
     if websocket.query_params:
         call_sid = websocket.query_params.get("call_sid")
-        logger.info(f"Call SID from query params: {call_sid}")
+        logger.info(f"WebSocket /media-stream handler received call_sid: {call_sid}")
+        logger.info(f"WebSocket query parameters: {dict(websocket.query_params)}")
+    else:
+        logger.warning("WebSocket connected with no query parameters")
+        # Try to extract call_sid from the first message if available
+        logger.info("Will attempt to extract call_sid from first Twilio message")
 
     try:
-        async with websockets.connect(
-            'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01',
-            extra_headers={
-                "Authorization": f"Bearer {websocket_service.api_key}",
-                "OpenAI-Beta": "realtime=v1"
-            }
-        ) as openai_ws:
-            logger.info("Connected to OpenAI WebSocket")
-            await websocket_service.initialize_session(openai_ws, call_sid)
-            await websocket_service.handle_media_stream(websocket, openai_ws, call_sid)
-            
+        # Pass control directly to the WebSocketService's handler
+        await websocket_service.handle_media_stream(websocket, call_sid)
     except Exception as e:
         logger.error(f"Error in media stream: {str(e)}")
     finally:

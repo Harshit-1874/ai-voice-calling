@@ -55,6 +55,7 @@ class CallController:
                     logger.warning(f"Could not create call log: {str(db_error)}")
             
             # Now create the proper TwiML with the call_sid
+            logger.info(f"Creating TwiML for call_sid: {call_result['call_sid']}")
             twiml = self.twilio_service.create_twiml_response(
                 ws_host=ws_host,
                 from_number=from_number,
@@ -64,10 +65,14 @@ class CallController:
             
             # Update the call with the proper TwiML
             try:
+                logger.info(f"Updating call {call_result['call_sid']} with new TwiML")
                 self.twilio_service.client.calls(call_result["call_sid"]).update(twiml=twiml)
-                logger.info(f"Updated call {call_result['call_sid']} with TwiML: {twiml}")
+                logger.info(f"Successfully updated call {call_result['call_sid']} with TwiML")
+                logger.info(f"TWiML content: {twiml}")
             except Exception as twilio_error:
-                logger.warning(f"Could not update call with TwiML: {str(twilio_error)}")
+                logger.error(f"Could not update call with TwiML: {str(twilio_error)}")
+                logger.error(f"Call SID: {call_result['call_sid']}")
+                logger.error(f"TWiML that failed: {twiml}")
             
             asyncio.create_task(self.poll_call_status(call_result["call_sid"]))
             
@@ -91,12 +96,15 @@ class CallController:
             
             # Get host for WebSocket URL
             host = request.url.hostname
+            call_sid = form_data.get("CallSid")
             logger.info(f"Using host for WebSocket: {host}")
+            logger.info(f"Incoming call CallSid: {call_sid}")
             
             response = self.twilio_service.create_twiml_response(
                 ws_host=host,
                 from_number=form_data.get("From", ""),
-                to_number=form_data.get("To", "")
+                to_number=form_data.get("To", ""),
+                call_sid=call_sid
             )
             
             return {"twiml": response}
@@ -137,6 +145,15 @@ class CallController:
             except Exception as db_error:
                 logger.error(f"Database error in handle_call_status: {str(db_error)}")
                 # Don't fail the request, just log the error
+
+            # Flush transcription buffer if call is finished
+            if call_status in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
+                logger.info(f"Call {call_sid} ended with status: {call_status}. Triggering transcription finalization.")
+                try:
+                    await self.websocket_service.finalize_call_transcriptions(call_sid)
+                except Exception as flush_error:
+                    logger.error(f"Error finalizing transcriptions for call {call_sid}: {flush_error}")
+
             # Always return 200 OK to Twilio, even if there was an error
             return {"status": "success"}
         except Exception as e:
