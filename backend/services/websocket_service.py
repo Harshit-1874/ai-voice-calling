@@ -142,7 +142,7 @@ class WebSocketService:
         self.prisma_service = PrismaService()
         self.redis_service = RedisService()
         self.live_transcription_buffers = {}  # call_sid -> list of {speaker, text}
-        logger.info("WebSocketService initialized with transcription service and Redis buffer")
+        logger.info(f"WebSocketService initialized (ID: {id(self)}) with transcription service and Redis buffer")
 
     def get_transcription_service(self):
         """Get the transcription service instance."""
@@ -154,16 +154,42 @@ class WebSocketService:
     def _get_redis_session_key(self, call_sid: str) -> str:
         return f"transcription_session:{call_sid}"
 
-    def _buffer_transcription(self, call_sid: str, speaker: str, text: str):
-        logger.info(f"[Buffer] _buffer_transcription called: call_sid={call_sid}, speaker={speaker}, text={text}")
+    async def _buffer_transcription(self, call_sid: str, speaker: str, text: str):
+        logger.info(f"[Buffer] _buffer_transcription called (Redis): call_sid={call_sid}, speaker={speaker}, text={text[:50]}...")
         if not call_sid:
-            logger.warning(f"[Buffer] No call_sid provided, skipping buffering for speaker={speaker}, text={text}")
+            logger.warning(f"[Buffer] No call_sid provided, skipping Redis buffering for speaker={speaker}, text={text[:50]}...")
             return
-        if call_sid not in self.live_transcription_buffers:
-            logger.info(f"[Buffer] Creating new buffer for call_sid={call_sid}")
-            self.live_transcription_buffers[call_sid] = []
-        self.live_transcription_buffers[call_sid].append({"speaker": speaker, "text": text})
-        logger.debug(f"[Buffer] Current buffer for {call_sid}: {self.live_transcription_buffers[call_sid]}")
+
+        entry = {
+            "speaker": speaker,
+            "text": text,
+            "timestamp": datetime.now().isoformat(),
+            "is_final": True
+        }
+        
+        try:
+            # IMPORTANT: Ensure Redis is connected before using its methods
+            # This is handled by the `async with self.redis_service` block in handle_media_stream,
+            # but for a standalone method like this, it's safer to ensure it here if not using __aenter__ around it.
+            # However, since this method is called within handle_media_stream's context,
+            # we can rely on the parent context for connection.
+            if self.redis_service.client is None:  # Double check if client is set up
+                logger.error(f"Redis client is None in _buffer_transcription for call {call_sid}. Falling back to in-memory.")
+                raise ConnectionError("Redis client not initialized or connected.")
+
+            await self.redis_service.client.rpush(self._get_redis_transcription_key(call_sid), json.dumps(entry))
+            logger.debug(f"[Buffer] Appended transcription to Redis list for call_sid={call_sid}. Current list length: {await self.redis_service.client.llen(self._get_redis_transcription_key(call_sid))}")
+        except Exception as e:
+            logger.error(f"Error buffering transcription to Redis for call {call_sid}: {e}")
+            # Fallback to in-memory buffer if Redis fails
+            if call_sid not in self.live_transcription_buffers:
+                self.live_transcription_buffers[call_sid] = []
+            self.live_transcription_buffers[call_sid].append({
+                "speaker": speaker,
+                "text": text,
+                "timestamp": datetime.now(),
+                "is_final": True
+            })
 
     async def initialize_session(self, openai_ws, call_sid: str = None):
         """Initialize the OpenAI session with configuration."""
@@ -208,10 +234,11 @@ class WebSocketService:
                         await self.prisma_service.update_session_status(session_id, "active")
                         
                         # Store session info in Redis
-                        self.redis_service.client.hset(self._get_redis_session_key(call_sid), mapping={
+                        await self.redis_service.client.hset(self._get_redis_session_key(call_sid), mapping={
                             "session_id": session_id,
                             "call_log_id": call_log.id
                         })
+                        logger.info(f"Redis session metadata set for call {call_sid}")
             except Exception as db_error:
                 logger.warning(f"Database error during session initialization for call {call_sid}: {str(db_error)}")
                 logger.warning("Continuing with call without database session tracking")
@@ -273,47 +300,120 @@ class WebSocketService:
             logger.debug("Sent mark event")
 
     async def process_openai_message(self, call_sid: str, message: dict, current_session_id: str = None):
-        logger.info(f"[OpenAI] Received event type: {message.get('type')}, message: {message}")
+        logger.info(f"[OpenAI] Received event type: {message.get('type')}, message: {message.get('transcript')[:50] if message.get('transcript') else 'N/A'}")
+        
+        # Call the transcription_service first, as it maintains active_transcriptions
         self.transcription_service.process_openai_message(call_sid, message)
-        # Buffer assistant speech
+
+        # Buffer parts to Redis for persistence
         if call_sid:
             message_type = message.get("type")
             if message_type in ["response.audio_transcript.delta", "response.audio_transcript.done"]:
                 transcript = message.get("transcript", "")
-                logger.info(f"Trying to find transcript: {transcript}")
                 if transcript:
-                    
-                    self._buffer_transcription(call_sid, "assistant", transcript)
+                    await self._buffer_transcription(call_sid, "assistant", transcript)  # AWAIT this call
             elif message_type in ["conversation.item.input_audio_transcription.delta", "conversation.item.input_audio_transcription.completed"]:
                 transcript = message.get("transcript", "")
                 if transcript:
-                    self._buffer_transcription(call_sid, "user", transcript)
+                    await self._buffer_transcription(call_sid, "user", transcript)  # AWAIT this call
+        else:
+            logger.error(f"process_openai_message: received message with no call_sid. Message type: {message.get('type')}")
 
     async def finalize_call_transcriptions(self, call_sid: str):
         """Save all buffered transcriptions from Redis to database when call ends"""
-        # Instead of Redis, use the in-memory buffer
-        buffer = self.live_transcription_buffers.get(call_sid)
-        if not buffer:
-            logger.warning(f"No live transcription buffer to save for call {call_sid}")
-            return
-        # Get call_log_id from DB
-        call_log = await self.prisma_service.get_call_log_by_sid(call_sid)
-        if not call_log:
-            logger.warning(f"No call log found for call_sid {call_sid}")
-            return
-        call_log_id = call_log.id
-        # Save each statement as a transcription row
-        for entry in buffer:
-            await self.prisma_service.add_transcription(
-                call_log_id=call_log_id,
-                session_id=None,
-                speaker=entry["speaker"],
-                text=entry["text"],
-                confidence=None,
-                is_final=True
-            )
-        logger.info(f"Saved {len(buffer)} transcriptions for call {call_sid} to DB.")
-        del self.live_transcription_buffers[call_sid]
+        logger.info(f"Attempting to finalize transcriptions for call {call_sid} (WS Service ID: {id(self)})")
+        
+        # Ensure Redis client is available before using it
+        if self.redis_service.client is None:
+            logger.warning(f"Redis client not available in finalize_call_transcriptions for {call_sid}. Attempting fallback to in-memory buffer.")
+            raw_transcription_entries_json = []  # No Redis data
+        else:
+            try:
+                raw_transcription_entries_json = await self.redis_service.client.lrange(self._get_redis_transcription_key(call_sid), 0, -1)
+            except Exception as e:
+                logger.error(f"Error retrieving Redis data for finalization of call {call_sid}: {e}. Falling back to in-memory.")
+                raw_transcription_entries_json = []  # Clear Redis data if fetch fails
+
+        if not raw_transcription_entries_json:
+            logger.warning(f"No buffered transcription data found in Redis for call {call_sid}")
+            # Fallback to in-memory buffer if Redis failed or had no data
+            buffer = self.live_transcription_buffers.get(call_sid)
+            if buffer:
+                logger.info(f"Using fallback in-memory buffer for call {call_sid} with {len(buffer)} entries")
+                buffered_transcriptions = [entry for entry in buffer]  # No need to json.dumps if already dicts
+            else:
+                logger.warning(f"No transcription data found in Redis or memory for call {call_sid}")
+                return  # No data to save
+        else:
+            buffered_transcriptions = [json.loads(entry) for entry in raw_transcription_entries_json]  # Parse only if from Redis
+        
+        # Get call_log_id and session_id from Redis metadata or fallback to Prisma
+        session_meta = {}
+        if self.redis_service.client:
+            try:
+                session_meta = await self.redis_service.client.hgetall(self._get_redis_session_key(call_sid))
+            except Exception as e:
+                logger.error(f"Error retrieving Redis session metadata for call {call_sid}: {e}")
+
+        call_log_id = int(session_meta.get("call_log_id")) if session_meta.get("call_log_id") else None
+        session_id_from_redis = session_meta.get("session_id")
+
+        if not call_log_id:
+            logger.error(f"Cannot finalize transcriptions: No call_log_id found in Redis metadata for call {call_sid}. Trying Prisma fallback.")
+            try:
+                call_log_fallback = await self.prisma_service.get_call_log(call_sid)  # Use get_call_log, not get_call_log_by_sid
+                if call_log_fallback:
+                    call_log_id = call_log_fallback.id
+                    logger.info(f"Fallback: Retrieved call_log_id {call_log_id} from Prisma for call {call_sid}")
+                else:
+                    logger.error(f"Prisma fallback also failed to find call log for {call_sid}. Cannot save transcriptions.")
+                    return  # Critical failure: cannot save without call_log_id
+            except Exception as e:
+                logger.error(f"Fallback to Prisma for call_log_id failed for {call_sid}: {e}")
+                return  # Cannot save without call_log_id
+
+        transcription_data_for_db = []
+        for entry in buffered_transcriptions:
+            # Ensure timestamp is a datetime object
+            timestamp_obj = entry.get("timestamp")
+            if isinstance(timestamp_obj, str):
+                try:
+                    timestamp_obj = datetime.fromisoformat(timestamp_obj)
+                except ValueError:
+                    logger.warning(f"Invalid timestamp format in Redis entry for call {call_sid}: {entry['timestamp']}. Using current time.")
+                    timestamp_obj = datetime.now()
+            elif not isinstance(timestamp_obj, datetime):
+                timestamp_obj = datetime.now()  # Default to now if not string or datetime
+
+            transcription_data_for_db.append({
+                'call_log_id': call_log_id,
+                'session_id': session_id_from_redis, 
+                'speaker': entry["speaker"],
+                'text': entry["text"],
+                'confidence': entry.get("confidence"),
+                'is_final': entry.get("is_final", True),
+                'timestamp': timestamp_obj
+            })
+
+        try:
+            async with self.prisma_service:
+                result = await self.prisma_service.add_transcriptions_batch(transcription_data_for_db)
+                logger.info(f"Successfully saved {result.count} transcriptions for call {call_sid} to DB via batch.")
+        except Exception as e:
+            logger.error(f"Error saving batch transcriptions to database for call {call_sid}: {e}")
+
+        # Clean up Redis after successful save
+        if self.redis_service.client:
+            try:
+                await self.redis_service.client.delete(self._get_redis_transcription_key(call_sid))
+                await self.redis_service.client.delete(self._get_redis_session_key(call_sid))
+                logger.info(f"Cleaned up Redis buffers for call {call_sid}")
+            except Exception as e:
+                logger.error(f"Error cleaning up Redis for call {call_sid}: {e}")
+
+        # Always clean up in-memory buffer (it's a fallback)
+        if call_sid in self.live_transcription_buffers:
+            del self.live_transcription_buffers[call_sid]
 
     def cleanup_transcription_buffer(self, call_sid: str):
         # No-op for Redis, cleanup handled in finalize_call_transcriptions
@@ -328,145 +428,148 @@ class WebSocketService:
         effective_call_sid = initial_call_sid
 
         try:
-            openai_ws = await websockets.connect(
-                'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01',
-                extra_headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "OpenAI-Beta": "realtime=v1"
-                }
-            )
-            logger.info("Connected to OpenAI WebSocket from WebSocketService")
-            
-            # Use the initial_call_sid for session initialization
-            await self.initialize_session(openai_ws, effective_call_sid)
+            # The async with self.redis_service will ensure connection for this context
+            async with self.redis_service:  # This ensures _client is connected and available
+                openai_ws = await websockets.connect(
+                    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01',
+                    extra_headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "OpenAI-Beta": "realtime=v1"
+                    }
+                )
+                logger.info("Connected to OpenAI WebSocket from WebSocketService")
+                
+                # Use the initial_call_sid for session initialization
+                await self.initialize_session(openai_ws, effective_call_sid)
 
-            # Connection specific state. These are local, so no need for _ prefixes unless
-            # they are modified by nonlocal scope inside nested functions.
-            stream_sid = None
-            latest_media_timestamp = 0
-            last_assistant_item = None
-            mark_queue = []
-            response_start_timestamp_twilio = None
-            current_session_id = None  # This will be set by session.created event
+                # Connection specific state. These are local, so no need for _ prefixes unless
+                # they are modified by nonlocal scope inside nested functions.
+                stream_sid = None
+                latest_media_timestamp = 0
+                last_assistant_item = None
+                mark_queue = []
+                response_start_timestamp_twilio = None
+                current_session_id = None  # This will be set by session.created event
 
-            async def receive_from_twilio_task():
-                nonlocal stream_sid, latest_media_timestamp, effective_call_sid
-                try:
-                    async for message in websocket.iter_text():
-                        data = json.loads(message)
-                        logger.debug(f"Received from Twilio: {data['event']}")
-                        
-                        # Crucial: If effective_call_sid is None, try to get it from the 'start' event
-                        if effective_call_sid is None and data.get('event') == 'start':
-                            if 'start' in data and 'callSid' in data['start']:
-                                effective_call_sid = data['start']['callSid']
-                                logger.info(f"UPDATED effective_call_sid from Twilio start event: {effective_call_sid}")
-                            elif 'start' in data and 'parameters' in data['start'] and 'CallSid' in data['start']['parameters']:
-                                effective_call_sid = data['start']['parameters']['CallSid']
-                                logger.info(f"UPDATED effective_call_sid from Twilio stream parameters: {effective_call_sid}")
-                            # Also, re-initialize the OpenAI session with the newly found call_sid
-                            # This handles cases where the initial call_sid was missing from query params
-                            if effective_call_sid and effective_call_sid != initial_call_sid:
-                                await self.initialize_session(openai_ws, effective_call_sid)
-                        
-                        if data['event'] == 'media' and openai_ws.open:
-                            latest_media_timestamp = int(data['media']['timestamp'])
-                            audio_append = {
-                                "type": "input_audio_buffer.append",
-                                "audio": data['media']['payload']
-                            }
-                            await openai_ws.send(json.dumps(audio_append))
-                            logger.debug("Sent audio chunk to OpenAI")
-                        elif data['event'] == 'start':
-                            stream_sid = data['start']['streamSid']
-                            logger.info(f"Incoming stream has started {stream_sid} for call_sid: {effective_call_sid}")
-                            response_start_timestamp_twilio = None
-                            latest_media_timestamp = 0
-                            last_assistant_item = None
-                        elif data['event'] == 'mark':
-                            if mark_queue:
-                                mark_queue.pop(0)
-                                logger.debug("Processed mark event")
-                except websockets.exceptions.ConnectionClosedOK:
-                    logger.info("Twilio WebSocket connection closed normally.")
-                except Exception as e:
-                    logger.error(f"Error in receive_from_twilio for call_sid {effective_call_sid}: {str(e)}")
-                    # Don't close the connection on database errors, just log them
-                    if "Foreign key constraint failed" in str(e) or "database" in str(e).lower():
-                        logger.warning(f"Database error in receive_from_twilio, continuing: {str(e)}")
-                    else:
-                        if openai_ws and openai_ws.open:
-                            await openai_ws.close()
-
-            async def send_to_twilio_task():
-                nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, current_session_id, effective_call_sid
-                try:
-                    async for openai_message in openai_ws:
-                        response = json.loads(openai_message)
-                        
-                        if response['type'] in LOG_EVENT_TYPES:
-                            logger.info(f"Received OpenAI event: {response['type']} for call_sid: {effective_call_sid}")
-                        
-                        if effective_call_sid:  # Use the established effective_call_sid
-                            await self.process_openai_message(effective_call_sid, response, current_session_id)
-                        else:
-                            logger.warning(f"send_to_twilio_task: effective_call_sid is None, cannot process OpenAI message for transcription.")
-                        
-                        if response.get('type') == 'session.created':
-                            current_session_id = response.get('session', {}).get('id')
-                            logger.info(f"Session created with ID: {current_session_id} for call_sid: {effective_call_sid}")
-                        
-                        if response.get('type') == 'response.audio.delta' and 'delta' in response:
-                            audio_payload = base64.b64encode(base64.b64decode(response['delta'])).decode('utf-8')
-                            audio_delta = {
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {
-                                    "payload": audio_payload
+                async def receive_from_twilio_task():
+                    nonlocal stream_sid, latest_media_timestamp, effective_call_sid
+                    try:
+                        async for message in websocket.iter_text():
+                            data = json.loads(message)
+                            logger.debug(f"Received from Twilio: {data['event']}")
+                            
+                            # Crucial: If effective_call_sid is None, try to get it from the 'start' event
+                            if effective_call_sid is None and data.get('event') == 'start':
+                                if 'start' in data and 'callSid' in data['start']:
+                                    effective_call_sid = data['start']['callSid']
+                                    logger.info(f"UPDATED effective_call_sid from Twilio start event: {effective_call_sid}")
+                                elif 'start' in data and 'parameters' in data['start'] and 'CallSid' in data['start']['parameters']:
+                                    effective_call_sid = data['start']['parameters']['CallSid']
+                                    logger.info(f"UPDATED effective_call_sid from Twilio stream parameters: {effective_call_sid}")
+                                # Also, re-initialize the OpenAI session with the newly found call_sid
+                                # This handles cases where the initial call_sid was missing from query params
+                                if effective_call_sid and effective_call_sid != initial_call_sid:
+                                    await self.initialize_session(openai_ws, effective_call_sid)
+                            
+                            if data['event'] == 'media' and openai_ws.open:
+                                latest_media_timestamp = int(data['media']['timestamp'])
+                                audio_append = {
+                                    "type": "input_audio_buffer.append",
+                                    "audio": data['media']['payload']
                                 }
-                            }
-                            await websocket.send_json(audio_delta)
-                            logger.debug(f"Sent audio response to Twilio for call_sid: {effective_call_sid}")
-                            
-                            if response_start_timestamp_twilio is None:
-                                response_start_timestamp_twilio = latest_media_timestamp
-                            
-                            if response.get('item_id'):
-                                last_assistant_item = response['item_id']
-                            
-                            await self.send_mark(websocket, stream_sid, mark_queue)
-                        
-                        if response.get('type') == 'input_audio_buffer.speech_started':
-                            logger.info(f"🎤 Speech started detected for call_sid: {effective_call_sid}")
-                            if last_assistant_item:
-                                await self.handle_speech_started_event(
-                                    openai_ws, websocket, stream_sid,
-                                    response_start_timestamp_twilio,
-                                    last_assistant_item,
-                                    latest_media_timestamp,
-                                    mark_queue
-                                )
-                        
-                        if response.get('type') == 'input_audio_buffer.speech_stopped':
-                            logger.info(f"🛑 Speech stopped detected for call_sid: {effective_call_sid}")
-                        
-                        if response.get('type') == 'session.ended':
-                            if current_session_id:
-                                async with self.prisma_service:
-                                    await self.prisma_service.update_session_status(current_session_id, "completed")
-                            
-                            if effective_call_sid:
-                                self.transcription_service.end_call_transcription(effective_call_sid)
-                            
-                            logger.info(f"Session ended for call_sid: {effective_call_sid}")
-                            
-                except websockets.exceptions.ConnectionClosedOK:
-                    logger.info(f"OpenAI WebSocket connection closed normally for call_sid: {effective_call_sid}.")
-                except Exception as e:
-                    logger.error(f"Error in send_to_twilio for call_sid {effective_call_sid}: {str(e)}")
+                                await openai_ws.send(json.dumps(audio_append))
+                                logger.debug("Sent audio chunk to OpenAI")
+                            elif data['event'] == 'start':
+                                stream_sid = data['start']['streamSid']
+                                logger.info(f"Incoming stream has started {stream_sid} for call_sid: {effective_call_sid}")
+                                response_start_timestamp_twilio = None
+                                latest_media_timestamp = 0
+                                last_assistant_item = None
+                            elif data['event'] == 'mark':
+                                if mark_queue:
+                                    mark_queue.pop(0)
+                                    logger.debug("Processed mark event")
+                    except websockets.exceptions.ConnectionClosedOK:
+                        logger.info("Twilio WebSocket connection closed normally.")
+                    except Exception as e:
+                        logger.error(f"Error in receive_from_twilio for call_sid {effective_call_sid}: {str(e)}")
+                        # Don't close the connection on database errors, just log them
+                        if "Foreign key constraint failed" in str(e) or "database" in str(e).lower():
+                            logger.warning(f"Database error in receive_from_twilio, continuing: {str(e)}")
+                        else:
+                            if openai_ws and openai_ws.open:
+                                await openai_ws.close()
 
-            # Start both tasks concurrently
-            await asyncio.gather(receive_from_twilio_task(), send_to_twilio_task())
+                async def send_to_twilio_task():
+                    nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, current_session_id, effective_call_sid
+                    try:
+                        async for openai_message in openai_ws:
+                            response = json.loads(openai_message)
+                            
+                            if response['type'] in LOG_EVENT_TYPES:
+                                logger.info(f"Received OpenAI event: {response['type']} for call_sid: {effective_call_sid}")
+                            
+                            if effective_call_sid:  # Use the established effective_call_sid
+                                await self.process_openai_message(effective_call_sid, response, current_session_id)
+                            else:
+                                logger.warning(f"send_to_twilio_task: effective_call_sid is None, cannot process OpenAI message for transcription.")
+                            
+                            if response.get('type') == 'session.created':
+                                current_session_id = response.get('session', {}).get('id')
+                                logger.info(f"Session created with ID: {current_session_id} for call_sid: {effective_call_sid}")
+                            
+                            if response.get('type') == 'response.audio.delta' and 'delta' in response:
+                                audio_payload = base64.b64encode(base64.b64decode(response['delta'])).decode('utf-8')
+                                audio_delta = {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {
+                                        "payload": audio_payload
+                                    }
+                                }
+                                await websocket.send_json(audio_delta)
+                                logger.debug(f"Sent audio response to Twilio for call_sid: {effective_call_sid}")
+                                
+                                if response_start_timestamp_twilio is None:
+                                    response_start_timestamp_twilio = latest_media_timestamp
+                                
+                                if response.get('item_id'):
+                                    last_assistant_item = response['item_id']
+                                
+                                await self.send_mark(websocket, stream_sid, mark_queue)
+                            
+                            if response.get('type') == 'input_audio_buffer.speech_started':
+                                logger.info(f"🎤 Speech started detected for call_sid: {effective_call_sid}")
+                                if last_assistant_item:
+                                    await self.handle_speech_started_event(
+                                        openai_ws, websocket, stream_sid,
+                                        response_start_timestamp_twilio,
+                                        last_assistant_item,
+                                        latest_media_timestamp,
+                                        mark_queue
+                                    )
+                            
+                            if response.get('type') == 'input_audio_buffer.speech_stopped':
+                                logger.info(f"🛑 Speech stopped detected for call_sid: {effective_call_sid}")
+                            
+                            if response.get('type') == 'session.ended':
+                                if current_session_id:
+                                    async with self.prisma_service:
+                                        await self.prisma_service.update_session_status(current_session_id, "completed")
+                                
+                                if effective_call_sid:
+                                    self.transcription_service.end_call_transcription(effective_call_sid)
+                                
+                                logger.info(f"Session ended for call_sid: {effective_call_sid}")
+                                
+                    except websockets.exceptions.ConnectionClosedOK:
+                        logger.info(f"OpenAI WebSocket connection closed normally for call_sid: {effective_call_sid}.")
+                    except Exception as e:
+                        logger.error(f"Error in send_to_twilio for call_sid {effective_call_sid}: {str(e)}")
+
+                # Start both tasks concurrently
+                await asyncio.gather(receive_from_twilio_task(), send_to_twilio_task())
+            
         except websockets.exceptions.ConnectionClosedOK:
             logger.info(f"Twilio WebSocket connection closed normally or OpenAI closed for call_sid: {effective_call_sid}.")
         except Exception as e:
