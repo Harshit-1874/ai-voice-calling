@@ -5,6 +5,7 @@ import websockets
 import logging
 from config import OPENAI_API_KEY
 from services.prisma_service import PrismaService
+from services.hubspot_service import HubspotService
 from services.transcription_service import TranscriptionService, SpeakerType
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -136,6 +137,7 @@ class WebSocketService:
             raise ValueError("OpenAI API key not found in environment variables")
         self.api_key = OPENAI_API_KEY
         self.transcription_service = TranscriptionService()
+        self.hubspot_service = HubspotService()
         self.prisma_service = PrismaService()
         # No more self.live_conversation_buffers here; use GLOBAL_LIVE_CONVERSATION_BUFFERS
         logger.info(f"WebSocketService initialized (ID: {id(self)}) with access to global in-memory buffer")
@@ -291,23 +293,30 @@ class WebSocketService:
             return
         buffer.set_end_time()
         call_log_id = buffer.call_log_db_id
-        if not call_log_id:
-            logger.error(f"Cannot finalize transcriptions: No call_log_db_id found in buffer for call {call_sid}. Trying Prisma fallback.")
-            try:
-                async with self.prisma_service:
-                    call_log_fallback = await self.prisma_service.get_call_log(call_sid)
-                    if call_log_fallback:
-                        call_log_id = call_log_fallback.id
-                        buffer.call_log_db_id = call_log_id
-                        logger.info(f"Fallback: Retrieved call_log_id {call_log_id} from Prisma for call {call_sid}")
-                    else:
-                        logger.error(f"Prisma fallback also failed to find call log for {call_sid}. Cannot save transcriptions.")
-                        return
-            except Exception as e:
-                logger.error(f"Error during Prisma fallback for call_log_id {call_sid}: {e}")
-                return
-        transcript_json = json.dumps(buffer.entries)
         try:
+            async with self.prisma_service:
+                # Always fetch the call log to get the phone number
+                call_log = await self.prisma_service.get_call_log(call_sid)
+                if not call_log:
+                    logger.error(f"Could not find call log for {call_sid}. Cannot save transcriptions or create HubSpot note.")
+                    return
+                call_log_id = call_log.id
+                buffer.call_log_db_id = call_log_id
+        except Exception as e:
+            logger.error(f"Error fetching call log for {call_sid}: {e}")
+            return
+        
+        transcript_json = json.dumps(buffer.entries)
+        phone_number = getattr(call_log, "toNumber", None)
+        try:
+            if phone_number and transcript_json:
+                conversation_text = "\n".join(
+                    [f"{t['speaker'].capitalize()}: {t['text']}" for t in buffer.entries]
+                )
+                logger.info(f"Creating note for contact with phone {phone_number} in HubSpot")
+                logger.debug(f"Note content: {conversation_text[:100]}...")  # Log first 100 chars for brevity
+                self.hubspot_service.create_note_for_contact(phone_number=phone_number, note_content=conversation_text)
+
             async with self.prisma_service:
                 await self.prisma_service.prisma.transcription.create(
                     data={
