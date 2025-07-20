@@ -4,8 +4,8 @@ generator client {
   interface            = "asyncio"
 }
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider = "postgres"
+  url      = env("SUPABASE_URL")
 }
 
 model Contact {
