@@ -62,6 +62,7 @@ model Transcription {
   id         Int      @id @default(autoincrement())
   callLogId  Int      @unique
   transcript String   // Store JSON as string
+  confidenceScore Float? // Overall confidence score for the call
   createdAt  DateTime @default(now())
   callLog    CallLog  @relation(fields: [callLogId], references: [id])
 }

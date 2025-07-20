@@ -8,6 +8,7 @@ from services.prisma_service import PrismaService
 from services.transcription_service import TranscriptionService, SpeakerType
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +81,11 @@ class TranscriptionBuffer:
         self.end_time = None  # Track end time
         logger.debug(f"TranscriptionBuffer created for call_sid: {call_sid}")
     
-    def add_entry(self, speaker: str, text: str, confidence: float = None, is_final: bool = False, timestamp: datetime = None):
+    def add_entry(self, speaker: str, text: str, is_final: bool = False, timestamp: datetime = None):
         """Add a transcription entry to the buffer"""
         entry = {
             'speaker': speaker,
             'text': text,
-            'confidence': confidence,
             'timestamp': timestamp.isoformat() if timestamp else datetime.now().isoformat(),  # Store as ISO string
             'is_final': is_final
         }
@@ -307,9 +307,11 @@ class WebSocketService:
                 logger.error(f"Error during Prisma fallback for call_log_id {call_sid}: {e}")
                 return
         transcript_json = json.dumps(buffer.entries)
+        confidence_score = None
         try:
+            # 1. Save the transcript JSON (without confidence) to the DB
             async with self.prisma_service:
-                await self.prisma_service.prisma.transcription.create(
+                transcription_row = await self.prisma_service.prisma.transcription.create(
                     data={
                         'callLogId': call_log_id,
                         'transcript': transcript_json
@@ -322,6 +324,42 @@ class WebSocketService:
                     duration=int(buffer.total_duration) if buffer.total_duration is not None else None
                 )
                 logger.info(f"Updated CallLog {call_sid} with duration and end time.")
+            # 2. Ask OpenAI/GPT for a confidence score for the call (new API)
+            try:
+                # Use only api_key, do not pass proxies or other kwargs
+                client = openai.OpenAI(api_key=self.api_key)  # v1.x API, no proxies arg
+                prompt = (
+                    "You are an expert call quality analyst. "
+                    "Given the following call transcription (as a JSON array of utterances), "
+                    "rate the overall confidence/clarity of the transcription on a scale of 1 to 10. "
+                    "Only return a single number (the score).\n\n"
+                    f"Call transcription: {transcript_json}"
+                )
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=5,
+                    temperature=0.0
+                )
+                score_str = response.choices[0].message.content.strip()
+                try:
+                    confidence_score = float(score_str)
+                    logger.info(f"OpenAI confidence score for call {call_sid}: {confidence_score}")
+                except Exception as parse_err:
+                    logger.warning(f"Could not parse confidence score from OpenAI: '{score_str}' ({parse_err})")
+            except Exception as openai_err:
+                logger.error(f"Error getting confidence score from OpenAI: {openai_err}")
+            # 3. Update the DB row with the confidence score
+            if confidence_score is not None:
+                async with self.prisma_service:
+                    await self.prisma_service.prisma.transcription.update(
+                        where={"id": transcription_row.id},
+                        data={"confidenceScore": confidence_score}
+                    )
+                    logger.info(f"Updated confidenceScore for call {call_sid} in DB.")
         except Exception as e:
             logger.error(f"Error saving single JSON transcription to database for call {call_sid}: {e}")
             logger.error(f"Transcript data that failed: {transcript_json[:200]}...")
