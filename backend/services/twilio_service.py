@@ -29,15 +29,13 @@ class TwilioService:
         """Create TwiML response for the call."""
         try:
             response = VoiceResponse()
-            
-            # Setup WebSocket connection first (before any Say elements)
+            # Use the actual sales opener as the greeting
+            response.say("Hi, this is Teya UK. We help businesses accept payments easily and affordably. Can I ask what kind of business you run?", voice="Polly.Joanna")
             connect = Connect()
             stream_url = f'wss://{ws_host}/media-stream'
             if call_sid:
                 stream_url += f'?call_sid={call_sid}'
             logger.info(f"WebSocket stream URL: {stream_url}")
-            
-            # Configure stream with parameters
             stream = Stream(url=stream_url)
             stream.parameter(name="From", value=from_number)
             stream.parameter(name="To", value=to_number)
@@ -45,16 +43,9 @@ class TwilioService:
                 stream.parameter(name="CallSid", value=call_sid)
             connect.append(stream)
             response.append(connect)
-            
-            # Add instructions after the Connect
-            response.say("Please wait while we connect your call to the AI voice assistant.")
-            response.pause(length=1)
-            response.say("You can start talking now!")
-            
             twiml = str(response)
             logger.info(f"Generated TwiML: {twiml}")
             return twiml
-            
         except Exception as e:
             logger.error(f"Error creating TwiML response: {str(e)}")
             raise

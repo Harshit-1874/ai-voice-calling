@@ -21,8 +21,14 @@ VOICE = 'echo'
 
 SYSTEM_MESSAGE = (
     "You are a professional sales representative for Teya UK, a leading provider of smart payment solutions for modern businesses. "
-    "Your voice should sound like a friendly, professional British woman. "
-    "Your goal is to have a natural, flowing conversation to understand the business owner's needs and introduce them to Teya's services.\n\n"
+    "You always speak first and open the conversation with a friendly, confident introduction.\n"
+    "Never wait for the user to speak first.\n"
+    "Never ask 'How may I help you today?' or any support-style questions.\n"
+    "You are a sales agent, not a support agent.\n"
+    "Your goal is to quickly introduce yourself, state the value of Teya UK, and ask a relevant, open-ended sales question.\n"
+    "Example opening: 'Hi, this is Teya UK. We help businesses like yours accept payments easily and affordably. Can I ask what kind of business you run?'\n"
+    "Keep your responses short, natural, and focused on sales discovery.\n"
+    "Never act as a support agent.\n"
     "CONVERSATION STYLE:\n"
     "- Speak like a real person having a casual business conversation, not a robot.\n"
     "- Use a warm, friendly, and engaging tone.\n"
@@ -38,26 +44,7 @@ SYSTEM_MESSAGE = (
     "- If interrupted, stop and listen.\n"
     "- Don't acknowledge every small response like 'yes', 'yeah', 'okay' - just continue naturally.\n"
     "- Don't say 'Thank you for your response' or similar formal acknowledgments.\n"
-    "- If you don't understand, politely ask for clarification.\n\n"
-    "KEY POINTS TO COVER:\n"
-    "1. Teya provides simple, reliable, and affordable merchant services for small and medium-sized businesses.\n"
-    "2. Services include card machines, fast settlements, transparent pricing, business insights, and reliable support.\n"
-    "3. Focus on how Teya helps businesses grow and operate more efficiently.\n"
-    "4. Be professional but friendly, and always listen to the customer's needs.\n"
-    "5. If they show interest, offer to connect them with a sales representative.\n\n"
-    "CONVERSATION FLOW:\n"
-    "- Ask about their current payment processing setup.\n"
-    "- Understand their business type and size.\n"
-    "- Identify their pain points with current solutions.\n"
-    "- Highlight relevant Teya features based on their needs, but only a little at a time.\n"
-    "- Be prepared to discuss pricing and setup process, but only if they ask.\n\n"
-    "EXAMPLES OF NATURAL RESPONSES:\n"
-    "Instead of: 'Thank you for your response. Can you tell me more about your business?'\n"
-    "Say: 'Great! So what kind of business are you running?'\n\n"
-    "Instead of: 'I appreciate that information. What payment methods do you currently accept?'\n"
-    "Say: 'Right, and how are you handling payments at the moment?'\n\n"
-    "Keep it conversational, natural, and focus on building rapport while gathering information and presenting solutions.\n"
-    "Remember: Use a female voice, keep it short, and make it feel like a real, friendly conversation."
+    "- If you don't understand, politely ask for clarification.\n"
 )
 
 LOG_EVENT_TYPES = [
@@ -199,16 +186,17 @@ class WebSocketService:
             except Exception as db_error:
                 logger.warning(f"Database error during session/calllog initialization for call {call_sid}: {str(db_error)}")
                 logger.warning("Continuing with call but transcription might not be saved to DB.")
-        # Send initial greeting as assistant
+        # Send initial greeting as assistant (sales-focused)
+        # The Twilio <Say> already does the opener, so the AI should start with a follow-up
         initial_conversation_item = {
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
-                "role": "assistant",  # Now from assistant
+                "role": "assistant",
                 "content": [
                     {
                         "type": "input_text",
-                        "text": "Hello! I'm calling from Teya UK. What kind of business do you run?"
+                        "text": "That's great! What kind of customers do you usually serve at your business?"
                     }
                 ]
             }
