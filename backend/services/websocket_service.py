@@ -185,32 +185,26 @@ class WebSocketService:
                     call_log = await self.prisma_service.get_call_log(call_sid)
                     if call_log:
                         # Create session entry in DB
-                        # IMPORTANT: Use call_log.id directly when creating session if Session model links to CallLog via ID
                         session_db_instance = await self.prisma_service.create_session(
                             session_id=f"session_{call_sid}",  # A unique string ID for the session
                             model="gpt-4o-realtime-preview-2024-10-01",
                             voice=VOICE
                         )
-                        # Link session to call using session's database ID (CUID) and call_sid
                         await self.prisma_service.link_session_to_call(session_db_instance.id, call_sid)  # Use session.id (CUID)
                         await self.prisma_service.update_session_status(session_db_instance.sessionId, "active")  # Use the string sessionId here
-
-                        # Store DB IDs in the in-memory buffer
                         current_buffer.set_db_ids(session_db_id=session_db_instance.id, call_log_db_id=call_log.id) # Store CUID string
                         logger.info(f"DB session (CUID: {session_db_instance.id}) and call_log IDs set in buffer for call {call_sid}")
-
                     else:
                         logger.warning(f"CallLog not found for {call_sid} during session initialization. Transcriptions may not be linked correctly.")
-
             except Exception as db_error:
                 logger.warning(f"Database error during session/calllog initialization for call {call_sid}: {str(db_error)}")
                 logger.warning("Continuing with call but transcription might not be saved to DB.")
-        # Send initial greeting
+        # Send initial greeting as assistant
         initial_conversation_item = {
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
-                "role": "user",
+                "role": "assistant",  # Now from assistant
                 "content": [
                     {
                         "type": "input_text",
@@ -220,7 +214,7 @@ class WebSocketService:
             }
         }
         await openai_ws.send(json.dumps(initial_conversation_item))
-        await openai_ws.send(json.dumps({"type": "response.create"}))
+        # Do NOT send response.create immediately
 
     async def handle_speech_started_event(self, openai_ws, websocket, stream_sid, response_start_timestamp_twilio, 
                                         last_assistant_item, latest_media_timestamp, mark_queue):
