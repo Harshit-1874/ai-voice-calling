@@ -36,6 +36,7 @@ model CallLog {
   recordingUrl   String?
   contactId      Int?
   sessionId      String?
+  conversationJson String?
   session        Session?        @relation(fields: [sessionId], references: [id])
   contact        Contact?        @relation(fields: [contactId], references: [id])
   conversation   Conversation?

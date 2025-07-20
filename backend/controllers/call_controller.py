@@ -1,4 +1,4 @@
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 import logging
 from typing import Dict, Any
 from services.twilio_service import TwilioService
@@ -7,6 +7,7 @@ from services.prisma_service import PrismaService
 from config import BASE_URL
 import asyncio
 import json
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,14 @@ class CallController:
                 except Exception as db_error:
                     logger.warning(f"Could not create call log: {str(db_error)}")
             
+            # Store the call_sid for later mapping when WebSocket connects
+            self.websocket_service.pending_call_sids[call_result["call_sid"]] = {
+                "from_number": from_number,
+                "to_number": to_number,
+                "created_at": datetime.now()
+            }
+            logger.info(f"Stored pending call_sid {call_result['call_sid']} for later mapping")
+            
             # Now create the proper TwiML with the call_sid
             twiml = self.twilio_service.create_twiml_response(
                 ws_host=ws_host,
@@ -99,7 +108,7 @@ class CallController:
                 to_number=form_data.get("To", "")
             )
             
-            return {"twiml": response}
+            return Response(content=str(response), media_type="application/xml")
             
         except Exception as e:
             logger.error(f"Error handling incoming call: {str(e)}")
@@ -119,6 +128,7 @@ class CallController:
             logger.info(f"Call {call_sid} status: {call_status}")
             if error_code:
                 logger.error(f"Call error - Code: {error_code}, Message: {error_message}")
+            
             # Update call log in database
             try:
                 async with self.prisma_service:
@@ -137,12 +147,65 @@ class CallController:
             except Exception as db_error:
                 logger.error(f"Database error in handle_call_status: {str(db_error)}")
                 # Don't fail the request, just log the error
+            
+            # If call is ending, save transcriptions
+            if call_status in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
+                # Add a small delay to allow WebSocket to finish processing
+                import asyncio
+                await asyncio.sleep(2)
+                await self.save_call_transcriptions(call_sid)
+            
             # Always return 200 OK to Twilio, even if there was an error
             return {"status": "success"}
         except Exception as e:
             logger.error(f"Error handling call status: {str(e)}")
             # Always return 200 OK to Twilio, even if there was an error
             return {"status": "success"}
+
+    async def save_call_transcriptions(self, call_sid: str) -> Dict[str, Any]:
+        """Save transcriptions for a specific call when it ends."""
+        try:
+            logger.info(f"Saving transcriptions for call {call_sid}")
+            
+            # Get the call log to verify it exists
+            async with self.prisma_service:
+                call_log = await self.prisma_service.get_call_log(call_sid)
+                if not call_log:
+                    logger.warning(f"Call log not found for {call_sid}")
+                    return {"success": False, "error": "Call log not found"}
+                
+                # Check if transcriptions already exist for this call
+                existing_transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
+                if existing_transcriptions:
+                    logger.info(f"Transcriptions already exist for call {call_sid} ({len(existing_transcriptions)} entries)")
+                    return {
+                        "success": True, 
+                        "message": f"Transcriptions already saved ({len(existing_transcriptions)} entries)",
+                        "count": len(existing_transcriptions)
+                    }
+                
+                # Since we're now saving transcriptions directly to database as they come in,
+                # we just need to check if any transcriptions exist for this call
+                logger.info(f"Checking for existing transcriptions for call {call_sid}")
+                
+                # Get transcriptions from database
+                transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
+                
+                if transcriptions:
+                    logger.info(f"Found {len(transcriptions)} transcriptions in database for call {call_sid}")
+                    return {
+                        "success": True,
+                        "message": f"Found {len(transcriptions)} transcriptions in database",
+                        "count": len(transcriptions)
+                    }
+                else:
+                    logger.warning(f"No transcriptions found in database for call {call_sid}")
+                    await self.websocket_service.finalize_call_transcriptions(call_sid)
+                    return {"success": False, "error": "No transcriptions found in database"}
+                    
+        except Exception as e:
+            logger.error(f"Error saving transcriptions for call {call_sid}: {str(e)}")
+            return {"success": False, "error": str(e)}
 
     async def poll_call_status(self, call_sid: str):
         """Poll the call status every 5 seconds"""
@@ -228,6 +291,9 @@ class CallController:
                 transcriptions = await self.prisma_service.get_transcriptions_for_call(call_log.id)
                 conversation = await self.prisma_service.get_conversation_analysis(call_log.id)
                 
+                # Get confidence scores
+                confidence_scores = await self.websocket_service.transcription_service.get_call_confidence_score(call_sid)
+                
                 return {
                     "call": {
                         "id": call_log.id,
@@ -265,6 +331,7 @@ class CallController:
                         }
                         for t in transcriptions
                     ],
+                    "confidence_scores": confidence_scores,
                     "conversation_analysis": {
                         "summary": conversation.summary,
                         "key_points": json.loads(conversation.keyPoints) if conversation and conversation.keyPoints else None,
@@ -275,4 +342,12 @@ class CallController:
                 }
         except Exception as e:
             logger.error(f"Error getting call details: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e)) 
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def get_previous_call_context(self, phone_number: str, limit: int = 3) -> str:
+        """Get context from previous calls to the same phone number."""
+        try:
+            return await self.websocket_service.transcription_service.get_previous_call_context(phone_number, limit)
+        except Exception as e:
+            logger.error(f"Error getting previous call context: {str(e)}")
+            return "" 
