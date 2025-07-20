@@ -362,34 +362,32 @@ class PrismaService:
             raise
 
     async def add_transcriptions_batch(self, transcriptions: List[Dict[str, Any]]):
-        """Add multiple transcriptions in a batch for better performance"""
+        """Add multiple transcriptions in a batch (robust for SQLite)."""
+        if not transcriptions:
+            return {'count': 0}
         try:
             await self.ensure_connected()
-            
-            # Prepare data for batch creation
-            transcription_data = []
+            saved_count = 0
             for t in transcriptions:
-                transcription_data.append({
-                    'callLogId': t['call_log_id'],
-                    'sessionId': t.get('session_id'),
-                    'speaker': t['speaker'],
-                    'text': t['text'],
-                    'confidence': t.get('confidence'),
-                    'isFinal': t.get('is_final', True),
-                    'timestamp': t.get('timestamp', datetime.now())
-                })
-            
-            # Use create_many for batch insertion
-            result = await self.prisma.transcription.create_many(
-                data=transcription_data,
-                skip_duplicates=True
-            )
-            
-            logger.info(f"Batch created {result.count} transcriptions")
-            return result
-            
+                try:
+                    await self.prisma.transcription.create(
+                        data={
+                            'callLogId': t['call_log_id'],
+                            'sessionId': t.get('session_id'),
+                            'speaker': t['speaker'],
+                            'text': t['text'],
+                            'confidence': t.get('confidence'),
+                            'isFinal': t.get('is_final', True),
+                            'timestamp': t.get('timestamp', datetime.now())
+                        }
+                    )
+                    saved_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save individual transcription: {e}. Data: {t}")
+            logger.info(f"Batch processed: Saved {saved_count}/{len(transcriptions)} transcriptions.")
+            return {'count': saved_count}
         except Exception as e:
-            logger.error(f"Error adding transcriptions batch: {str(e)}")
+            logger.error(f"Critical error adding transcriptions batch: {str(e)}")
             raise
 
     async def get_transcriptions_for_call(self, call_log_id: int):

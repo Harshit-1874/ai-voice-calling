@@ -60,16 +60,10 @@ model Session {
 
 model Transcription {
   id         Int      @id @default(autoincrement())
-  callLogId  Int
-  sessionId  String?
-  timestamp  DateTime @default(now())
-  speaker    String
-  text       String
-  confidence Float?
-  isFinal    Boolean  @default(false)
+  callLogId  Int      @unique
+  transcript String   // Store JSON as string
+  createdAt  DateTime @default(now())
   callLog    CallLog  @relation(fields: [callLogId], references: [id])
-
-  @@map("transcriptions")
 }
 
 model Conversation {
