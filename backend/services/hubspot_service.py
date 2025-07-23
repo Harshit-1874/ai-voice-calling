@@ -41,8 +41,8 @@ class HubspotService:
         except ContactsApiException as e:
             logger.error(f"Error updating contact {contact_id}: {e}")
             raise
-    
-    def create_note_for_contact(self, phone_number, note_content):
+
+    def create_note_for_contact(self, phone_number, transcription, note_content):
         try:
             filters = Filter(property_name="phone", operator="EQ", value=phone_number)
             filter_group = FilterGroup(filters=[filters])
@@ -58,7 +58,7 @@ class HubspotService:
             contact_id = search_res.results[0].id
 
             input_data = SimplePublicObjectInput(
-                properties={"last_call_note": note_content}
+                properties={"last_call_note": note_content, "call_transcription": transcription}
             )
 
             self.client.crm.contacts.basic_api.update(

@@ -142,16 +142,33 @@ class WebSocketService:
 
     async def initialize_session(self, openai_ws, call_sid: str = None):
         """Initialize the OpenAI session with configuration."""
+        voice_future = self.prisma_service.get_constant("VOICE")
+        instructions_future = self.prisma_service.get_constant("SYSTEM_MESSAGE")
+        temp_future = self.prisma_service.get_constant("TEMPERATURE")
+
+        results = await asyncio.gather(
+            voice_future,
+            instructions_future,
+            temp_future
+        )
+        voice, instructions, temp_str = results
+        try:
+            # Provide a default value and ensure temperature is a float
+            temperature = float(temp_str.value) if temp_str is not None else 0.7
+        except (ValueError, TypeError):
+            # Handle cases where the stored value is not a valid number
+            temperature = 0.7
+
         session_update = {
             "type": "session.update",
             "session": {
                 "turn_detection": {"type": "server_vad","threshold": 0.65},  # Raised threshold for better turn-taking
                 "input_audio_format": "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
-                "voice": VOICE,
-                "instructions": SYSTEM_MESSAGE,
+                "voice": voice.value,
+                "instructions": instructions.value,
                 "modalities": ["text", "audio"],
-                "temperature": TEMPERATURE,
+                "temperature": temperature,
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 }
@@ -298,16 +315,6 @@ class WebSocketService:
         transcript_json = json.dumps(buffer.entries)
         confidence_score = None
         try:
-            if phone_number and transcript_json:
-                conversation_text = "\n".join(
-                    [f"{t['speaker'].capitalize()}: {t['text']}" for t in buffer.entries]
-                )
-                logger.info(f"Creating note for contact with phone {phone_number} in HubSpot")
-                logger.debug(f"Note content: {conversation_text[:100]}...")  # Log first 100 chars for brevity
-                try:
-                    self.hubspot_service.create_note_for_contact(phone_number=phone_number, note_content=conversation_text)
-                except Exception as e:
-                    logger.error(f"Error creating HubSpot note for {phone_number}: {e}")
             # 1. Save the transcript JSON (without confidence) to the DB
             async with self.prisma_service:
                 transcription_row = await self.prisma_service.prisma.transcription.create(
@@ -323,35 +330,57 @@ class WebSocketService:
                     duration=int(buffer.total_duration) if buffer.total_duration is not None else None
                 )
                 logger.info(f"Updated CallLog {call_sid} with duration and end time.")
+            conclusion = ""
             # 2. Ask OpenAI/GPT for a confidence score for the call (new API)
             try:
                 # Use only api_key, do not pass proxies or other kwargs
                 client = openai.OpenAI(api_key=self.api_key)  # v1.x API, no proxies arg
-                prompt = (
-                    "You are an expert call quality analyst. "
-                    "Given the following call transcription (as a JSON array of utterances), "
-                    "rate the overall confidence/clarity of the transcription on a scale of 1 to 10. "
-                    "Only return a single number (the score).\n\n"
-                    f"Call transcription: {transcript_json}"
+                system_prompt = (
+                    "You are an expert call quality analyst. You will be given a call transcription "
+                    "as a JSON array of utterances. Your task is to rate the overall confidence/clarity "
+                    "of the transcription and provide a brief conclusion about the user's interest. "
+                    "Make sure to include the points like user wants to set a meeting, and all relevant details."
+                    "You must return ONLY a single valid JSON object with two keys: 'score' (a number from 1 to 10) "
+                    "and 'conclusion' (a string)."
                 )
+                user_prompt = f"Call transcription: {transcript_json}"
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": prompt}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
                     ],
-                    max_tokens=5,
-                    temperature=0.0
+                    max_tokens=150,
+                    temperature=0.0,
+                    response_format={
+                        "type": "json_object"
+                    }
                 )
-                score_str = response.choices[0].message.content.strip()
+                response_content = response.choices[0].message.content
+                logger.info(f"Raw OpenAI response: {response_content}")
+                data = json.loads(response_content)
+
+                confidence_score = data.get('score')
+                conclusion = data.get('conclusion')
                 try:
-                    confidence_score = float(score_str)
+                    confidence_score = float(confidence_score)
+                    logger.info(f"OpenAI conclusion for call {call_sid}: {conclusion}")
                     logger.info(f"OpenAI confidence score for call {call_sid}: {confidence_score}")
                 except Exception as parse_err:
-                    logger.warning(f"Could not parse confidence score from OpenAI: '{score_str}' ({parse_err})")
+                    logger.warning(f"Could not parse confidence score from OpenAI: '{confidence_score}' ({parse_err})")
             except Exception as openai_err:
                 logger.error(f"Error getting confidence score from OpenAI: {openai_err}")
             # 3. Update the DB row with the confidence score
+            if phone_number and transcript_json:
+                conversation_text = "\n".join(
+                    [f"{t['speaker'].capitalize()}: {t['text']}" for t in buffer.entries]
+                )
+                logger.info(f"Creating note for contact with phone {phone_number} in HubSpot")
+                logger.debug(f"Note content: {conversation_text[:100]}...")  # Log first 100 chars for brevity
+                try:
+                    self.hubspot_service.create_note_for_contact(phone_number=phone_number, transcription=conversation_text, note_content=conclusion)
+                except Exception as e:
+                    logger.error(f"Error creating HubSpot note for {phone_number}: {e}")
             if confidence_score is not None:
                 async with self.prisma_service:
                     await self.prisma_service.prisma.transcription.update(
