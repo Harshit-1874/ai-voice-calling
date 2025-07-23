@@ -196,10 +196,10 @@ async def hubspot_sync_worker():
                     try:
                         temp_data = extract_hubspot_temp_data(contact)
                         await prisma_service.upsert_hubspot_temp_data(temp_data)
-                        # make_call.apply_async(
-                        #     kwargs={'contact_data': temp_data},
-                        #     countdown=idx * 30
-                        # )
+                        make_call.apply_async(
+                            kwargs={'contact_data': temp_data},
+                            countdown=idx * 30
+                        )
                         synced_temp_count += 1
                     except Exception as e:
                         logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
@@ -511,10 +511,10 @@ async def trigger_manual_sync():
                 try:
                     temp_data = extract_hubspot_temp_data(contact)
                     await prisma_service.upsert_hubspot_temp_data(temp_data)
-                    # make_call.apply_async(
-                    #     kwargs={'contact_data': temp_data},
-                    #     countdown=idx * 30
-                    # )
+                    make_call.apply_async(
+                        kwargs={'contact_data': temp_data},
+                        countdown=idx * 30
+                    )
                     synced_temp_count += 1
                 except Exception as e:
                     logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
