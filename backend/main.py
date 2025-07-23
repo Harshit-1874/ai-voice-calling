@@ -12,6 +12,7 @@ from hubspot_cron_sync import extract_hubspot_temp_data, extract_contact_data
 from contextlib import asynccontextmanager
 import uvicorn
 from routes.call_routes import router as call_router
+from routes.constant_routes import router as constant_router
 from routes.hubspot_routes import router as hubspot_router
 from tasks.call_tasks import make_call
 from routes.contact_routes import router as contact_router
@@ -195,10 +196,10 @@ async def hubspot_sync_worker():
                     try:
                         temp_data = extract_hubspot_temp_data(contact)
                         await prisma_service.upsert_hubspot_temp_data(temp_data)
-                        make_call.apply_async(
-                            kwargs={'contact_data': temp_data},
-                            countdown=idx * 30
-                        )
+                        # make_call.apply_async(
+                        #     kwargs={'contact_data': temp_data},
+                        #     countdown=idx * 30
+                        # )
                         synced_temp_count += 1
                     except Exception as e:
                         logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
@@ -329,6 +330,7 @@ app.add_middleware(
 )
 
 app.include_router(call_router)
+app.include_router(constant_router)
 app.include_router(hubspot_router)
 app.include_router(contact_router)
 
@@ -492,7 +494,7 @@ async def trigger_manual_sync():
             }
         
         try:
-            # Fetch contacts from HubSpot
+            # # Fetch contacts from HubSpot
             contacts = hubspot_service.get_contacts(limit=500)
             
             # Filter contacts
@@ -509,10 +511,10 @@ async def trigger_manual_sync():
                 try:
                     temp_data = extract_hubspot_temp_data(contact)
                     await prisma_service.upsert_hubspot_temp_data(temp_data)
-                    make_call.apply_async(
-                        kwargs={'contact_data': temp_data},
-                        countdown=idx * 30
-                    )
+                    # make_call.apply_async(
+                    #     kwargs={'contact_data': temp_data},
+                    #     countdown=idx * 30
+                    # )
                     synced_temp_count += 1
                 except Exception as e:
                     logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")

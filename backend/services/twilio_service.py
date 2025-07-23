@@ -30,7 +30,7 @@ class TwilioService:
         try:
             response = VoiceResponse()
             # Use the actual sales opener as the greeting
-            response.say("Hi, this is Teya UK. We help businesses accept payments easily and affordably. Can I ask what kind of business you run?", voice="Polly.Joanna")
+            response.say("Hi, this is Sarah from Teya UK. We help businesses accept payments easily and affordably. Can I ask what kind of business you run?", voice="Polly.Joanna")
             connect = Connect()
             stream_url = f'wss://{ws_host}/media-stream'
             if call_sid:

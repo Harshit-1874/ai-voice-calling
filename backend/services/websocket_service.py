@@ -19,6 +19,7 @@ GLOBAL_LIVE_CONVERSATION_BUFFERS: Dict[str, 'TranscriptionBuffer'] = {}
 
 # OpenAI Configuration
 VOICE = 'echo'
+TEMPERATURE = 0.7
 
 SYSTEM_MESSAGE = (
     "You are a professional sales representative for Teya UK, a leading provider of smart payment solutions for modern businesses. "
@@ -150,7 +151,7 @@ class WebSocketService:
                 "voice": VOICE,
                 "instructions": SYSTEM_MESSAGE,
                 "modalities": ["text", "audio"],
-                "temperature": 0.7,
+                "temperature": TEMPERATURE,
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 }
@@ -303,7 +304,10 @@ class WebSocketService:
                 )
                 logger.info(f"Creating note for contact with phone {phone_number} in HubSpot")
                 logger.debug(f"Note content: {conversation_text[:100]}...")  # Log first 100 chars for brevity
-                self.hubspot_service.create_note_for_contact(phone_number=phone_number, note_content=conversation_text)
+                try:
+                    self.hubspot_service.create_note_for_contact(phone_number=phone_number, note_content=conversation_text)
+                except Exception as e:
+                    logger.error(f"Error creating HubSpot note for {phone_number}: {e}")
             # 1. Save the transcript JSON (without confidence) to the DB
             async with self.prisma_service:
                 transcription_row = await self.prisma_service.prisma.transcription.create(

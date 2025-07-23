@@ -93,3 +93,11 @@ model HubspotTempData {
   createdAt      DateTime @default(now())
   hubspotCreatedAt String?
 }
+
+model Constant {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}

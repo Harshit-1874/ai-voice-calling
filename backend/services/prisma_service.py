@@ -536,3 +536,62 @@ class PrismaService:
         except Exception as e:
             logger.error(f"Error deleting transcriptions for call: {str(e)}")
             raise
+
+    async def get_constant(self, key: str) -> Optional[str]:
+        """Retrieve a constant value by key."""
+        try:
+            await self.ensure_connected()
+            constant = await self.prisma.constant.find_unique(
+                where={'key': key}
+            )
+            return constant if constant else None
+        except Exception as e:
+            logger.error(f"Error getting constant '{key}': {str(e)}")
+            return None
+        
+    async def delete_constant(self, key: str) -> bool:
+        """Delete a constant by key."""
+        try:
+            await self.ensure_connected()
+            constant = await self.prisma.constant.delete(
+                where={'key': key}
+            )
+            logger.info(f"Deleted constant '{key}'")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting constant '{key}': {str(e)}")
+            return False
+        
+    async def set_constant(self, key: str, value: str):
+        """Set or update a constant value by key."""
+        try:
+            await self.ensure_connected()
+            constant = await self.prisma.constant.upsert(
+                where={
+                    'key': key
+                },
+                data={
+                    'create': {
+                        'key': key,
+                        'value': value
+                    },
+                    'update': {
+                        'value': value
+                    }
+                }
+            )
+            logger.info(f"Set constant '{key}'")
+            return constant
+        except Exception as e:
+            logger.error(f"Error setting constant '{key}': {str(e)}")
+            raise
+    
+    async def get_all_constants(self) -> dict:
+        """Get all constants as a dict."""
+        try:
+            await self.ensure_connected()
+            constants = await self.prisma.constant.find_many()
+            return {c.key: c.value for c in constants}
+        except Exception as e:
+            logger.error(f"Error getting all constants: {str(e)}")
+            return {}
