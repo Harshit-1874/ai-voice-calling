@@ -4,8 +4,8 @@ generator client {
   interface            = "asyncio"
 }
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider = "postgres"
+  url      = env("SUPABASE_URL")
 }
 
 model Contact {
@@ -60,16 +60,12 @@ model Session {
 
 model Transcription {
   id         Int      @id @default(autoincrement())
-  callLogId  Int
-  sessionId  String?
-  timestamp  DateTime @default(now())
-  speaker    String
-  text       String
-  confidence Float?
-  isFinal    Boolean  @default(false)
+  callLogId  Int      @unique
+  transcript String   // Store JSON as string
+  conclusion String?  // AI-generated call conclusion
+  confidenceScore Float? // Overall confidence score for the call
+  createdAt  DateTime @default(now())
   callLog    CallLog  @relation(fields: [callLogId], references: [id])
-
-  @@map("transcriptions")
 }
 
 model Conversation {
@@ -97,4 +93,12 @@ model HubspotTempData {
   lastName       String?
   createdAt      DateTime @default(now())
   hubspotCreatedAt String?
+}
+
+model Constant {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
 }

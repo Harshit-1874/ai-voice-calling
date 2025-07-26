@@ -4,6 +4,7 @@ from typing import Dict, Any
 from services.twilio_service import TwilioService
 from services.websocket_service import WebSocketService
 from services.prisma_service import PrismaService
+from services.context_service import ContextService
 from config import BASE_URL
 import asyncio
 import json
@@ -15,6 +16,7 @@ class CallController:
         self.twilio_service = TwilioService()
         self.websocket_service = WebSocketService()
         self.prisma_service = PrismaService()
+        self.context_service = ContextService()
 
     async def initiate_call(self, phone_number: str, request: Request) -> Dict[str, Any]:
         try:
@@ -55,6 +57,7 @@ class CallController:
                     logger.warning(f"Could not create call log: {str(db_error)}")
             
             # Now create the proper TwiML with the call_sid
+            logger.info(f"Creating TwiML for call_sid: {call_result['call_sid']}")
             twiml = self.twilio_service.create_twiml_response(
                 ws_host=ws_host,
                 from_number=from_number,
@@ -64,10 +67,14 @@ class CallController:
             
             # Update the call with the proper TwiML
             try:
+                logger.info(f"Updating call {call_result['call_sid']} with new TwiML")
                 self.twilio_service.client.calls(call_result["call_sid"]).update(twiml=twiml)
-                logger.info(f"Updated call {call_result['call_sid']} with TwiML: {twiml}")
+                logger.info(f"Successfully updated call {call_result['call_sid']} with TwiML")
+                logger.info(f"TWiML content: {twiml}")
             except Exception as twilio_error:
-                logger.warning(f"Could not update call with TwiML: {str(twilio_error)}")
+                logger.error(f"Could not update call with TwiML: {str(twilio_error)}")
+                logger.error(f"Call SID: {call_result['call_sid']}")
+                logger.error(f"TWiML that failed: {twiml}")
             
             asyncio.create_task(self.poll_call_status(call_result["call_sid"]))
             
@@ -84,6 +91,66 @@ class CallController:
             logger.error(f"Error initiating call: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
+    async def get_call_context(self, phone_number: str) -> Dict[str, Any]:
+        """Get context information for a phone number before making a call"""
+        try:
+            cleaned_number = self.twilio_service.clean_phone_number(phone_number)
+            if not cleaned_number:
+                raise HTTPException(status_code=400, detail="Invalid phone number format")
+            
+            async with self.prisma_service:
+                # Get call history and context
+                call_context = await self.prisma_service.get_contact_context_by_phone(cleaned_number)
+                
+                if not call_context or not call_context.get('call_history'):
+                    return {
+                        "phone_number": cleaned_number,
+                        "has_previous_calls": False,
+                        "message": "No previous call history found. This will be a first-time call."
+                    }
+                
+                # Extract context from call history
+                context = self.context_service.extract_context_from_call_history(call_context['call_history'])
+                
+                # Format response with context information
+                response = {
+                    "phone_number": cleaned_number,
+                    "has_previous_calls": True,
+                    "total_previous_calls": context.get('total_calls', 0),
+                    "last_call_date": context.get('last_call_date'),
+                    "customer_name": context.get('customer_name'),
+                    "business_name": context.get('business_name'),
+                    "business_type": context.get('business_type'),
+                    "payment_preferences": context.get('payment_preferences', []),
+                    "previous_interests": context.get('previous_interests', []),
+                    "previous_objections": context.get('previous_objections', []),
+                    "call_outcomes": context.get('call_outcomes', []),
+                    "key_insights": context.get('key_insights', []),
+                    "last_conversation_summary": context.get('last_conversation_summary'),
+                    "contact_info": call_context.get('contact')
+                }
+                
+                # Generate a human-readable summary
+                summary_parts = []
+                if context.get('customer_name'):
+                    summary_parts.append(f"Customer name: {context['customer_name']}")
+                if context.get('business_name'):
+                    summary_parts.append(f"Business: {context['business_name']}")
+                elif context.get('business_type'):
+                    summary_parts.append(f"Business type: {context['business_type']}")
+                if context.get('total_calls'):
+                    summary_parts.append(f"Previous calls: {context['total_calls']}")
+                if context.get('previous_objections'):
+                    summary_parts.append(f"Previous concerns: {', '.join(context['previous_objections'][:2])}")
+                
+                response["summary"] = "; ".join(summary_parts) if summary_parts else "Previous call history available"
+                
+                return response
+                
+        except Exception as e:
+            logger.error(f"Error getting call context for {phone_number}: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     async def handle_incoming_call(self, request: Request) -> Dict[str, Any]:
         try:
             form_data = await request.form()
@@ -91,12 +158,15 @@ class CallController:
             
             # Get host for WebSocket URL
             host = request.url.hostname
+            call_sid = form_data.get("CallSid")
             logger.info(f"Using host for WebSocket: {host}")
+            logger.info(f"Incoming call CallSid: {call_sid}")
             
             response = self.twilio_service.create_twiml_response(
                 ws_host=host,
                 from_number=form_data.get("From", ""),
-                to_number=form_data.get("To", "")
+                to_number=form_data.get("To", ""),
+                call_sid=call_sid
             )
             
             return {"twiml": response}
@@ -137,6 +207,15 @@ class CallController:
             except Exception as db_error:
                 logger.error(f"Database error in handle_call_status: {str(db_error)}")
                 # Don't fail the request, just log the error
+
+            # Flush transcription buffer if call is finished
+            if call_status in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
+                logger.info(f"Call {call_sid} ended with status: {call_status}. Triggering transcription finalization.")
+                try:
+                    await self.websocket_service.finalize_call_transcriptions(call_sid)
+                except Exception as flush_error:
+                    logger.error(f"Error finalizing transcriptions for call {call_sid}: {flush_error}")
+
             # Always return 200 OK to Twilio, even if there was an error
             return {"status": "success"}
         except Exception as e:

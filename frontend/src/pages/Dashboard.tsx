@@ -98,7 +98,8 @@ export default function Dashboard() {
     setCalling(true);
     setCallResult(null);
     try {
-      const res = await fetch(`http://localhost:8000/call/${encodeURIComponent(phoneNumber)}`, { method: 'POST' });
+      const res = await fetch(`http://localhost:8000/call/${encodeURIComponent(phoneNumber)}`, { 
+        headers:{'Authorization': `Bearer ${localStorage.getItem("token")}`},method: 'POST' });
       if (!res.ok) throw new Error('Failed to initiate call');
       const data = await res.json();
       setCallResult('Call initiated!');
@@ -107,6 +108,10 @@ export default function Dashboard() {
     } finally {
       setCalling(false);
     }
+  };
+  
+  const navigateToSettings = () => {
+    window.location.href = '/settings';
   };
 
   // Add this function to refresh call logs
@@ -170,6 +175,16 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold">Dashboard <span className="ml-1">👋</span></h1>
           <div className="flex items-center space-x-4">
             <input type="text" placeholder="Search..." className="px-3 py-2 border border-gray-700 rounded-lg focus:outline-none focus:ring w-64 bg-gray-900 text-gray-100" />
+            <button
+              onClick={navigateToSettings}
+              className="p-2 rounded-lg hover:bg-gray-800 transition-colors duration-200"
+              title="Settings"
+            >
+              <svg className="w-6 h-6 text-gray-400 hover:text-gray-200" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
             <img src="https://randomuser.me/api/portraits/men/31.jpg" alt="User" className="w-10 h-10 rounded-full" />
           </div>
         </div>

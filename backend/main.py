@@ -8,10 +8,14 @@ from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordBearer
+from utils.jwt_utils import create_access_token, verify_access_token, get_current_user
 from hubspot_cron_sync import extract_hubspot_temp_data, extract_contact_data
 from contextlib import asynccontextmanager
 import uvicorn
 from routes.call_routes import router as call_router
+from routes.constant_routes import router as constant_router
 from routes.hubspot_routes import router as hubspot_router
 from tasks.call_tasks import make_call
 from routes.contact_routes import router as contact_router
@@ -40,6 +44,9 @@ logger.info(f"Start Time: {datetime.now()}")
 logger.info(f"Log file location: {log_file}")
 logger.info("="*50)
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+ADMIN_EMAIL = "admin@gmail.com"
+ADMIN_PASSWORD = "admin@123"
 # Global task references
 sync_task = None
 celery_worker_thread = None
@@ -195,10 +202,10 @@ async def hubspot_sync_worker():
                     try:
                         temp_data = extract_hubspot_temp_data(contact)
                         await prisma_service.upsert_hubspot_temp_data(temp_data)
-                        make_call.apply_async(
-                            kwargs={'contact_data': temp_data},
-                            countdown=idx * 30
-                        )
+                        # make_call.apply_async(
+                        #     kwargs={'contact_data': temp_data},
+                        #     countdown=idx * 30
+                        # )
                         synced_temp_count += 1
                     except Exception as e:
                         logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")
@@ -329,6 +336,7 @@ app.add_middleware(
 )
 
 app.include_router(call_router)
+app.include_router(constant_router)
 app.include_router(hubspot_router)
 app.include_router(contact_router)
 
@@ -336,6 +344,15 @@ app.include_router(contact_router)
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.post("/login")
+async def login(form_data: dict):
+    email = form_data.get("email")
+    password = form_data.get("password")
+    if email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
+        access_token = create_access_token({"sub": email})
+        return {"access_token": access_token, "token_type": "bearer"}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
 # Unified sync status check endpoint
 @app.get("/health/sync")
@@ -473,7 +490,7 @@ async def check_queue_status():
 
 # Manual sync trigger endpoint
 @app.post("/sync/trigger")
-async def trigger_manual_sync():
+async def trigger_manual_sync(user = Depends(get_current_user)):
     """
     Manually trigger a HubSpot contact sync
     """
@@ -492,7 +509,7 @@ async def trigger_manual_sync():
             }
         
         try:
-            # Fetch contacts from HubSpot
+            # # Fetch contacts from HubSpot
             contacts = hubspot_service.get_contacts(limit=500)
             
             # Filter contacts
@@ -509,10 +526,10 @@ async def trigger_manual_sync():
                 try:
                     temp_data = extract_hubspot_temp_data(contact)
                     await prisma_service.upsert_hubspot_temp_data(temp_data)
-                    make_call.apply_async(
-                        kwargs={'contact_data': temp_data},
-                        countdown=idx * 30
-                    )
+                    # make_call.apply_async(
+                    #     kwargs={'contact_data': temp_data},
+                    #     countdown=idx * 30
+                    # )
                     synced_temp_count += 1
                 except Exception as e:
                     logger.error(f"Error syncing HubspotTempData for contact {contact.get('id', 'unknown')}: {str(e)}")

@@ -362,34 +362,32 @@ class PrismaService:
             raise
 
     async def add_transcriptions_batch(self, transcriptions: List[Dict[str, Any]]):
-        """Add multiple transcriptions in a batch for better performance"""
+        """Add multiple transcriptions in a batch (robust for SQLite)."""
+        if not transcriptions:
+            return {'count': 0}
         try:
             await self.ensure_connected()
-            
-            # Prepare data for batch creation
-            transcription_data = []
+            saved_count = 0
             for t in transcriptions:
-                transcription_data.append({
-                    'callLogId': t['call_log_id'],
-                    'sessionId': t.get('session_id'),
-                    'speaker': t['speaker'],
-                    'text': t['text'],
-                    'confidence': t.get('confidence'),
-                    'isFinal': t.get('is_final', True),
-                    'timestamp': t.get('timestamp', datetime.now())
-                })
-            
-            # Use create_many for batch insertion
-            result = await self.prisma.transcription.create_many(
-                data=transcription_data,
-                skip_duplicates=True
-            )
-            
-            logger.info(f"Batch created {result.count} transcriptions")
-            return result
-            
+                try:
+                    await self.prisma.transcription.create(
+                        data={
+                            'callLogId': t['call_log_id'],
+                            'sessionId': t.get('session_id'),
+                            'speaker': t['speaker'],
+                            'text': t['text'],
+                            'confidence': t.get('confidence'),
+                            'isFinal': t.get('is_final', True),
+                            'timestamp': t.get('timestamp', datetime.now())
+                        }
+                    )
+                    saved_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save individual transcription: {e}. Data: {t}")
+            logger.info(f"Batch processed: Saved {saved_count}/{len(transcriptions)} transcriptions.")
+            return {'count': saved_count}
         except Exception as e:
-            logger.error(f"Error adding transcriptions batch: {str(e)}")
+            logger.error(f"Critical error adding transcriptions batch: {str(e)}")
             raise
 
     async def get_transcriptions_for_call(self, call_log_id: int):
@@ -538,3 +536,157 @@ class PrismaService:
         except Exception as e:
             logger.error(f"Error deleting transcriptions for call: {str(e)}")
             raise
+
+    async def get_constant(self, key: str) -> Optional[str]:
+        """Retrieve a constant value by key."""
+        try:
+            await self.ensure_connected()
+            constant = await self.prisma.constant.find_unique(
+                where={'key': key}
+            )
+            return constant if constant else None
+        except Exception as e:
+            logger.error(f"Error getting constant '{key}': {str(e)}")
+            return None
+        
+    async def delete_constant(self, key: str) -> bool:
+        """Delete a constant by key."""
+        try:
+            await self.ensure_connected()
+            constant = await self.prisma.constant.delete(
+                where={'key': key}
+            )
+            logger.info(f"Deleted constant '{key}'")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting constant '{key}': {str(e)}")
+            return False
+        
+    async def set_constant(self, key: str, value: str):
+        """Set or update a constant value by key."""
+        try:
+            await self.ensure_connected()
+            constant = await self.prisma.constant.upsert(
+                where={
+                    'key': key
+                },
+                data={
+                    'create': {
+                        'key': key,
+                        'value': value
+                    },
+                    'update': {
+                        'value': value
+                    }
+                }
+            )
+            logger.info(f"Set constant '{key}'")
+            return constant
+        except Exception as e:
+            logger.error(f"Error setting constant '{key}': {str(e)}")
+            raise
+    
+    async def get_all_constants(self) -> dict:
+        """Get all constants as a dict."""
+        try:
+            await self.ensure_connected()
+            constants = await self.prisma.constant.find_many()
+            return {c.key: c.value for c in constants}
+        except Exception as e:
+            logger.error(f"Error getting all constants: {str(e)}")
+            return {}
+
+    # Context-aware calling methods
+    async def get_previous_calls_for_number(self, phone_number: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get previous calls for a phone number with their transcriptions"""
+        try:
+            await self.ensure_connected()
+            # Get call logs for this phone number (both to and from)
+            call_logs = await self.prisma.calllog.find_many(
+                where={
+                    "OR": [
+                        {"toNumber": phone_number},
+                        {"fromNumber": phone_number}
+                    ],
+                    "status": {"in": ["completed", "answered"]}  # Only successful calls
+                },
+                include={
+                    "transcriptions": True,
+                    "conversation": True
+                },
+                order={"startTime": "desc"},
+                take=limit
+            )
+            
+            result = []
+            for call in call_logs:
+                call_data = {
+                    "id": call.id,
+                    "callSid": call.callSid,
+                    "fromNumber": call.fromNumber,
+                    "toNumber": call.toNumber,
+                    "status": call.status,
+                    "startTime": call.startTime,
+                    "endTime": call.endTime,
+                    "duration": call.duration,
+                    "transcriptions": [],
+                    "conversation": None
+                }
+                
+                # Add transcription data
+                if call.transcriptions:
+                    for trans in call.transcriptions:
+                        try:
+                            transcript_data = json.loads(trans.transcript) if trans.transcript else []
+                            call_data["transcriptions"] = transcript_data
+                        except json.JSONDecodeError:
+                            logger.warning(f"Invalid JSON in transcription for call {call.callSid}")
+                            call_data["transcriptions"] = []
+                
+                # Add conversation analysis if available
+                if call.conversation:
+                    call_data["conversation"] = {
+                        "summary": call.conversation.summary,
+                        "keyPoints": call.conversation.keyPoints,
+                        "sentiment": call.conversation.sentiment,
+                        "leadScore": call.conversation.leadScore,
+                        "nextAction": call.conversation.nextAction
+                    }
+                
+                result.append(call_data)
+            
+            logger.info(f"Found {len(result)} previous calls for number {phone_number}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting previous calls for number {phone_number}: {str(e)}")
+            return []
+
+    async def get_contact_context_by_phone(self, phone_number: str) -> Optional[Dict[str, Any]]:
+        """Get contact information and call history context for a phone number"""
+        try:
+            await self.ensure_connected()
+            
+            # Try to find existing contact (optional)
+            contact = await self.prisma.contact.find_unique(
+                where={"phone": phone_number}
+            )
+            
+            # Always get previous calls directly (more reliable)
+            previous_calls = await self.get_previous_calls_for_number(phone_number, 3)
+            
+            return {
+                "contact": {
+                    "id": contact.id,
+                    "name": contact.name,
+                    "phone": contact.phone,
+                    "email": contact.email,
+                    "company": contact.company,
+                    "notes": contact.notes
+                } if contact else None,
+                "call_history": previous_calls
+            }
+                
+        except Exception as e:
+            logger.error(f"Error getting contact context for {phone_number}: {str(e)}")
+            return None
