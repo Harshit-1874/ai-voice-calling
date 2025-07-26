@@ -31,8 +31,6 @@ echo "🚀 Starting AI Voice Calling Backend..."\n\
 echo "📊 Using PostgreSQL database via SUPABASE_URL"\n\
 echo "🔧 Generating Prisma client..."\n\
 prisma generate\n\
-echo "🔄 Starting Celery worker..."\n\
-celery -A celery_app.celery_app worker --loglevel=info --pool=solo &\n\
 echo "🌐 Starting FastAPI server..."\n\
 exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload' > /app/run.sh && chmod +x /app/run.sh
 
