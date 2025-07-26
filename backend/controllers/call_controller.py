@@ -4,6 +4,7 @@ from typing import Dict, Any
 from services.twilio_service import TwilioService
 from services.websocket_service import WebSocketService
 from services.prisma_service import PrismaService
+from services.context_service import ContextService
 from config import BASE_URL
 import asyncio
 import json
@@ -15,6 +16,7 @@ class CallController:
         self.twilio_service = TwilioService()
         self.websocket_service = WebSocketService()
         self.prisma_service = PrismaService()
+        self.context_service = ContextService()
 
     async def initiate_call(self, phone_number: str, request: Request) -> Dict[str, Any]:
         try:
@@ -87,6 +89,66 @@ class CallController:
             
         except Exception as e:
             logger.error(f"Error initiating call: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def get_call_context(self, phone_number: str) -> Dict[str, Any]:
+        """Get context information for a phone number before making a call"""
+        try:
+            cleaned_number = self.twilio_service.clean_phone_number(phone_number)
+            if not cleaned_number:
+                raise HTTPException(status_code=400, detail="Invalid phone number format")
+            
+            async with self.prisma_service:
+                # Get call history and context
+                call_context = await self.prisma_service.get_contact_context_by_phone(cleaned_number)
+                
+                if not call_context or not call_context.get('call_history'):
+                    return {
+                        "phone_number": cleaned_number,
+                        "has_previous_calls": False,
+                        "message": "No previous call history found. This will be a first-time call."
+                    }
+                
+                # Extract context from call history
+                context = self.context_service.extract_context_from_call_history(call_context['call_history'])
+                
+                # Format response with context information
+                response = {
+                    "phone_number": cleaned_number,
+                    "has_previous_calls": True,
+                    "total_previous_calls": context.get('total_calls', 0),
+                    "last_call_date": context.get('last_call_date'),
+                    "customer_name": context.get('customer_name'),
+                    "business_name": context.get('business_name'),
+                    "business_type": context.get('business_type'),
+                    "payment_preferences": context.get('payment_preferences', []),
+                    "previous_interests": context.get('previous_interests', []),
+                    "previous_objections": context.get('previous_objections', []),
+                    "call_outcomes": context.get('call_outcomes', []),
+                    "key_insights": context.get('key_insights', []),
+                    "last_conversation_summary": context.get('last_conversation_summary'),
+                    "contact_info": call_context.get('contact')
+                }
+                
+                # Generate a human-readable summary
+                summary_parts = []
+                if context.get('customer_name'):
+                    summary_parts.append(f"Customer name: {context['customer_name']}")
+                if context.get('business_name'):
+                    summary_parts.append(f"Business: {context['business_name']}")
+                elif context.get('business_type'):
+                    summary_parts.append(f"Business type: {context['business_type']}")
+                if context.get('total_calls'):
+                    summary_parts.append(f"Previous calls: {context['total_calls']}")
+                if context.get('previous_objections'):
+                    summary_parts.append(f"Previous concerns: {', '.join(context['previous_objections'][:2])}")
+                
+                response["summary"] = "; ".join(summary_parts) if summary_parts else "Previous call history available"
+                
+                return response
+                
+        except Exception as e:
+            logger.error(f"Error getting call context for {phone_number}: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
     async def handle_incoming_call(self, request: Request) -> Dict[str, Any]:
