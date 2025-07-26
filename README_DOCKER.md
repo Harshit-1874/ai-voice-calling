@@ -169,14 +169,6 @@ To access the database GUI (Prisma Studio) from your host machine:
 
 ### Required Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `TWILIO_ACCOUNT_SID` | Your Twilio Account SID | `AC1fc6a5932d6861ed868236048d9ce2d5` |
-| `TWILIO_AUTH_TOKEN` | Your Twilio Auth Token | `813bbbd2f66b6d2c07936469324be8dd` |
-| `TWILIO_PHONE_NUMBER` | Your Twilio Phone Number | `+447808221001` |
-| `OPENAI_API_KEY` | Your OpenAI API Key | `sk-proj-...` |
-| `HUBSPOT_ACCESS_TOKEN` | Your HubSpot Access Token | `pat-na2-...` |
-
 ### Optional Variables
 
 | Variable | Description | Default |
