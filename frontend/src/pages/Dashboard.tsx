@@ -98,7 +98,8 @@ export default function Dashboard() {
     setCalling(true);
     setCallResult(null);
     try {
-      const res = await fetch(`http://localhost:8000/call/${encodeURIComponent(phoneNumber)}`, { method: 'POST' });
+      const res = await fetch(`http://localhost:8000/call/${encodeURIComponent(phoneNumber)}`, { 
+        headers:{'Authorization': `Bearer ${localStorage.getItem("token")}`},method: 'POST' });
       if (!res.ok) throw new Error('Failed to initiate call');
       const data = await res.json();
       setCallResult('Call initiated!');

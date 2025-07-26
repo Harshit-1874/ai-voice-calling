@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
@@ -11,13 +11,32 @@ function App() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
 
-  const handleLogin = (e) => {
-    e.preventDefault()
-    if (email === 'admin@gmail.com' && password === 'admin@123') {
+  // Check for token on mount
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    if (token) {
       setIsLoggedIn(true)
-      setError('')
-    } else {
-      setError('Invalid credentials')
+    }
+  }, [])
+
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    try {
+      const res = await fetch("http://localhost:8000/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await res.json()
+      if (res.ok && data.access_token) {
+        localStorage.setItem("token", data.access_token)
+        setIsLoggedIn(true)
+        setError("")
+      } else {
+        setError(data.detail || "Invalid credentials")
+      }
+    } catch (err) {
+      setError("Login failed")
     }
   }
 
