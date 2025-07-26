@@ -7,6 +7,7 @@ from config import OPENAI_API_KEY
 from services.prisma_service import PrismaService
 from services.hubspot_service import HubspotService
 from services.transcription_service import TranscriptionService, SpeakerType
+from services.context_service import ContextService
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import openai
@@ -22,31 +23,26 @@ VOICE = 'echo'
 TEMPERATURE = 0.7
 
 SYSTEM_MESSAGE = (
-    "You are a professional sales representative for Teya UK, a leading provider of smart payment solutions for modern businesses. "
-    "You always speak first and open the conversation with a friendly, confident introduction.\n"
-    "Never wait for the user to speak first.\n"
-    "Never ask 'How may I help you today?' or any support-style questions.\n"
-    "You are a sales agent, not a support agent.\n"
-    "Your goal is to quickly introduce yourself, state the value of Teya UK, and ask a relevant, open-ended sales question.\n"
-    "Example opening: 'Hi, this is Teya UK. We help businesses like yours accept payments easily and affordably. Can I ask what kind of business you run?'\n"
-    "Keep your responses short, natural, and focused on sales discovery.\n"
-    "Never act as a support agent.\n"
-    "CONVERSATION STYLE:\n"
-    "- Speak like a real person having a casual business conversation, not a robot.\n"
-    "- Use a warm, friendly, and engaging tone.\n"
-    "- Keep your responses short and natural (1-2 sentences).\n"
+    "You are a sales representative for Teya UK, a payment solutions company. "
+    "IMPORTANT: You must speak first immediately when the call starts. Do not wait for the user to speak.\n"
+    "Your goal is to learn about their business and offer payment solutions.\n"
+    "SPEECH CONTROL - VERY IMPORTANT:\n"
+    "- Speak at a SLOW, natural, conversational pace. Do NOT rush.\n"
+    "- Use natural pauses between sentences and phrases.\n"
+    "- Keep responses very short (1-2 sentences maximum per response).\n"
     "- Never ask more than one question at a time.\n"
-    "- Pause and listen after each question or statement, don't rush to the next topic.\n"
-    "- If the user is silent, wait a couple of seconds before gently prompting again.\n"
-    "- If the user gives a short answer, ask a follow-up or show interest before moving on.\n"
-    "- Never overload the user with too much information at once.\n"
-    "- Avoid long monologues.\n"
-    "- Make the conversation interactive and engaging.\n"
-    "- React naturally to what they say and build on it immediately.\n"
-    "- If interrupted, stop and listen.\n"
-    "- Don't acknowledge every small response like 'yes', 'yeah', 'okay' - just continue naturally.\n"
-    "- Don't say 'Thank you for your response' or similar formal acknowledgments.\n"
-    "- If you don't understand, politely ask for clarification.\n"
+    "- If the user says 'thank you' or wants to end the call, simply say 'Thanks, goodbye!' and stop.\n"
+    "- Do NOT give long farewell speeches or offer future assistance.\n"
+    "- Keep all responses under 15 words when possible.\n"
+    "CONTEXT AWARENESS:\n"
+    "- If this is a callback or repeat customer, acknowledge it naturally in your greeting.\n"
+    "- Reference their business type if you know it.\n"
+    "- Don't repeat information gathering if you already have context about them.\n"
+    "INTERRUPTION HANDLING:\n"
+    "- IMMEDIATELY stop speaking when the user starts talking.\n"
+    "- Never continue your previous thought after being interrupted.\n"
+    "- Listen to what the user says and respond directly to their input.\n"
+    "- Always prioritize responding to user input over completing your own thoughts.\n"
 )
 
 LOG_EVENT_TYPES = [
@@ -127,6 +123,7 @@ class WebSocketService:
         self.transcription_service = TranscriptionService()
         self.hubspot_service = HubspotService()
         self.prisma_service = PrismaService()
+        self.context_service = ContextService()
         # No more self.live_conversation_buffers here; use GLOBAL_LIVE_CONVERSATION_BUFFERS
         logger.info(f"WebSocketService initialized (ID: {id(self)}) with access to global in-memory buffer")
 
@@ -140,8 +137,8 @@ class WebSocketService:
             logger.info(f"Created new TranscriptionBuffer in GLOBAL_LIVE_CONVERSATION_BUFFERS for call {call_sid}")
         return GLOBAL_LIVE_CONVERSATION_BUFFERS[call_sid]
 
-    async def initialize_session(self, openai_ws, call_sid: str = None):
-        """Initialize the OpenAI session with configuration."""
+    async def initialize_session(self, openai_ws, call_sid: str = None, phone_number: str = None):
+        """Initialize the OpenAI session with configuration and context-aware instructions."""
         voice_future = self.prisma_service.get_constant("VOICE")
         instructions_future = self.prisma_service.get_constant("SYSTEM_MESSAGE")
         temp_future = self.prisma_service.get_constant("TEMPERATURE")
@@ -154,102 +151,208 @@ class WebSocketService:
         voice, instructions, temp_str = results
         try:
             # Provide a default value and ensure temperature is a float
-            temperature = float(temp_str.value) if temp_str is not None else 0.7
+            temperature = float(temp_str.value) if temp_str is not None else 0.3  # Lower temperature for more controlled speech
         except (ValueError, TypeError):
             # Handle cases where the stored value is not a valid number
-            temperature = 0.7
+            temperature = 0.3  # Lower temperature for more stable responses
+
+        # Get base instructions
+        base_instructions = instructions.value if instructions else SYSTEM_MESSAGE
+        
+        # Get context-aware instructions if phone number is available
+        context_instructions = base_instructions
+        call_context = None
+        
+        logger.info(f"[CONTEXT DEBUG] Phone number received: {phone_number}")
+        
+        if phone_number:
+            try:
+                # Get call history and context for this phone number
+                logger.info(f"Getting context for phone number: {phone_number}")
+                async with self.prisma_service:
+                    call_context = await self.prisma_service.get_contact_context_by_phone(phone_number)
+                    logger.info(f"[CONTEXT DEBUG] Retrieved call_context: {call_context}")
+                    
+                if call_context and call_context.get('call_history'):
+                    logger.info(f"[CONTEXT DEBUG] Found {len(call_context['call_history'])} calls in history")
+                    # Extract context from call history
+                    context = self.context_service.extract_context_from_call_history(call_context['call_history'])
+                    logger.info(f"[CONTEXT DEBUG] Extracted context: {context}")
+                    
+                    # Add simple context to system message
+                    if context.get('total_calls', 0) > 0:
+                        context_addition = f"\n\nIMPORTANT CONTEXT: This customer has called {context.get('total_calls')} times before. "
+                        if context.get('business_type'):
+                            context_addition += f"They run a {context.get('business_type')} business. "
+                        if any('callback' in insight.lower() for insight in context.get('key_insights', [])):
+                            context_addition += "This is a callback - they were busy before. "
+                        context_addition += "Acknowledge this context in your greeting appropriately."
+                        
+                        context_instructions = base_instructions + context_addition
+                        logger.info(f"Added context to instructions: {context.get('business_type')}, calls: {context.get('total_calls')}")
+                        logger.info(f"[CONTEXT DEBUG] Full context_addition: {context_addition}")
+                    else:
+                        logger.info(f"[CONTEXT DEBUG] No calls found in context (total_calls: {context.get('total_calls', 0)})")
+                    
+                else:
+                    logger.info(f"No call history found for {phone_number}, using base instructions")
+                    logger.info(f"[CONTEXT DEBUG] call_context details: {call_context}")
+                    
+            except Exception as e:
+                logger.error(f"Error getting context for {phone_number}: {str(e)}")
+                logger.info("Falling back to base instructions")
 
         session_update = {
             "type": "session.update",
             "session": {
-                "turn_detection": {"type": "server_vad","threshold": 0.65},  # Raised threshold for better turn-taking
+                "turn_detection": {"type": "server_vad","threshold": 0.5},  # Adjusted threshold for better interruption detection
                 "input_audio_format": "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
-                "voice": voice.value,
-                "instructions": instructions.value,
+                "voice": voice.value if voice else VOICE,
+                "instructions": context_instructions,
                 "modalities": ["text", "audio"],
                 "temperature": temperature,
+                "max_response_output_tokens": 150,  # Limit response length to prevent long speeches
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 }
             }
         }
-        logger.info('Sending session update')
+        logger.info('Sending session update with context-aware instructions')
         await openai_ws.send(json.dumps(session_update))
         
-        # Create session in database and start transcription if call_sid is provided
+        # Start database operations in the background to avoid blocking
         if call_sid:
-            try:
-                # Get or create the buffer immediately
-                current_buffer = self.get_or_create_buffer(call_sid)
+            asyncio.create_task(self._handle_database_setup(call_sid, openai_ws))
+        
+        # Return context for use in greeting
+        return call_context
 
-                async with self.prisma_service:
-                    # Start transcription tracking
-                    self.transcription_service.start_call_transcription(call_sid)
-                    logger.info(f"Started transcription tracking for call {call_sid}")
-                    
-                    # Get the call log to get its ID
-                    call_log = await self.prisma_service.get_call_log(call_sid)
-                    if call_log:
-                        # Create session entry in DB
-                        session_db_instance = await self.prisma_service.create_session(
-                            session_id=f"session_{call_sid}",  # A unique string ID for the session
-                            model="gpt-4o-realtime-preview-2024-10-01",
-                            voice=VOICE
-                        )
-                        await self.prisma_service.link_session_to_call(session_db_instance.id, call_sid)  # Use session.id (CUID)
-                        await self.prisma_service.update_session_status(session_db_instance.sessionId, "active")  # Use the string sessionId here
-                        current_buffer.set_db_ids(session_db_id=session_db_instance.id, call_log_db_id=call_log.id) # Store CUID string
-                        logger.info(f"DB session (CUID: {session_db_instance.id}) and call_log IDs set in buffer for call {call_sid}")
-                    else:
-                        logger.warning(f"CallLog not found for {call_sid} during session initialization. Transcriptions may not be linked correctly.")
-            except Exception as db_error:
-                logger.warning(f"Database error during session/calllog initialization for call {call_sid}: {str(db_error)}")
-                logger.warning("Continuing with call but transcription might not be saved to DB.")
-        # Send initial greeting as assistant (sales-focused)
-        # The Twilio <Say> already does the opener, so the AI should start with a follow-up
-        initial_conversation_item = {
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "That's great! What kind of customers do you usually serve at your business?"
-                    }
-                ]
+    async def _handle_database_setup(self, call_sid: str, openai_ws):
+        """Handle database setup operations in the background to avoid blocking conversation start."""
+        try:
+            # Get or create the buffer immediately
+            current_buffer = self.get_or_create_buffer(call_sid)
+
+            async with self.prisma_service:
+                # Start transcription tracking
+                self.transcription_service.start_call_transcription(call_sid)
+                logger.info(f"Started transcription tracking for call {call_sid}")
+                
+                # Get the call log to get its ID
+                call_log = await self.prisma_service.get_call_log(call_sid)
+                if call_log:
+                    # Create session entry in DB
+                    session_db_instance = await self.prisma_service.create_session(
+                        session_id=f"session_{call_sid}",  # A unique string ID for the session
+                        model="gpt-4o-realtime-preview-2024-10-01",
+                        voice=VOICE
+                    )
+                    await self.prisma_service.link_session_to_call(session_db_instance.id, call_sid)  # Use session.id (CUID)
+                    await self.prisma_service.update_session_status(session_db_instance.sessionId, "active")  # Use the string sessionId here
+                    current_buffer.set_db_ids(session_db_id=session_db_instance.id, call_log_db_id=call_log.id) # Store CUID string
+                    logger.info(f"DB session (CUID: {session_db_instance.id}) and call_log IDs set in buffer for call {call_sid}")
+                else:
+                    logger.warning(f"CallLog not found for {call_sid} during session initialization. Transcriptions may not be linked correctly.")
+        except Exception as db_error:
+            logger.warning(f"Database error during session/calllog initialization for call {call_sid}: {str(db_error)}")
+            logger.warning("Continuing with call but transcription might not be saved to DB.")
+
+    async def trigger_initial_conversation(self, openai_ws, context: Dict[str, Any] = None):
+        """Trigger the initial conversation after the stream is established."""
+        try:
+            # Simple context-aware greeting logic
+            if context and context.get('total_calls', 0) > 0:
+                # This is a repeat customer - use callback greeting
+                if any('callback' in insight.lower() for insight in context.get('key_insights', [])):
+                    greeting_text = "Say: 'Hi, this is Teya UK calling back. Is now a better time?'"
+                elif context.get('business_type'):
+                    greeting_text = f"Say: 'Hi, this is Teya UK again. How's the {context.get('business_type')} business going?'"
+                else:
+                    greeting_text = "Say: 'Hi, this is Teya UK calling back. How are things?'"
+                logger.info(f"Using callback greeting for repeat customer (calls: {context.get('total_calls')})")
+            else:
+                # First-time caller - standard greeting
+                greeting_text = "Say: 'Hi, this is Teya UK. What kind of business do you run?'"
+                logger.info("Using standard greeting for first-time caller")
+            
+            logger.info(f"Sending greeting: {greeting_text}")
+            
+            initial_conversation_item = {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": greeting_text
+                        }
+                    ]
+                }
             }
-        }
-        await openai_ws.send(json.dumps(initial_conversation_item))
-        # Do NOT send response.create immediately
+            await openai_ws.send(json.dumps(initial_conversation_item))
+            await openai_ws.send(json.dumps({"type": "response.create"}))
+            logger.info('Sent context-aware greeting trigger to start AI conversation immediately')
+        except Exception as e:
+            logger.error(f"Error triggering initial conversation: {e}")
+
+    def _build_context_aware_greeting(self, context: Dict[str, Any]) -> str:
+        """Build a context-aware greeting based on previous conversations"""
+        # Check if this is a callback situation
+        insights = context.get('key_insights', [])
+        is_callback = any('callback' in insight.lower() or 'busy' in insight.lower() for insight in insights)
+        
+        business_type = context.get('business_type', '')
+        business_name = context.get('business_name', '')
+        payment_prefs = context.get('payment_preferences', [])
+        
+        if is_callback and business_type:
+            # Callback with known business
+            if 'technology' in business_type or 'agency' in business_type:
+                return "Say: 'Hi, this is Teya UK calling back. Is now a better time to chat?'"
+            else:
+                return f"Say: 'Hi, this is Teya UK calling back. Is now a good time?'"
+        elif business_type and payment_prefs:
+            # Known customer with payment preferences
+            return f"Say: 'Hi, this is Teya UK again. How are your payments going?'"
+        elif business_type:
+            # Known business type but no specific callback
+            return f"Say: 'Hi, this is Teya UK. How are things going?'"
+        else:
+            # Fallback for repeat customer without much context
+            return "Say: 'Hi, this is Teya UK calling back. How can we help?'"
 
     async def handle_speech_started_event(self, openai_ws, websocket, stream_sid, response_start_timestamp_twilio, 
                                         last_assistant_item, latest_media_timestamp, mark_queue):
         """Handle interruption when the caller's speech starts."""
-        logger.info("Handling speech started event")
-        if mark_queue and response_start_timestamp_twilio is not None:
-            elapsed_time = latest_media_timestamp - response_start_timestamp_twilio
-            logger.debug(f"Calculating elapsed time for truncation: {elapsed_time}ms")
-
-            if last_assistant_item:
-                logger.debug(f"Truncating item with ID: {last_assistant_item}")
-                truncate_event = {
-                    "type": "conversation.item.truncate",
-                    "item_id": last_assistant_item,
-                    "content_index": 0,
-                    "audio_end_ms": elapsed_time
-                }
-                await openai_ws.send(json.dumps(truncate_event))
-
+        logger.info("🎤 User started speaking - handling interruption immediately")
+        
+        # Immediately clear the outgoing audio to stop the AI from speaking
+        if stream_sid:
             await websocket.send_json({
                 "event": "clear",
                 "streamSid": stream_sid
             })
+            logger.info("🛑 Cleared outgoing audio stream to stop AI speech")
+        
+        # Calculate truncation point and truncate the current response
+        if mark_queue and response_start_timestamp_twilio is not None and last_assistant_item:
+            elapsed_time = latest_media_timestamp - response_start_timestamp_twilio
+            logger.info(f"Truncating AI response at {elapsed_time}ms to handle user interruption")
 
-            mark_queue.clear()
-            last_assistant_item = None
-            response_start_timestamp_twilio = None
+            truncate_event = {
+                "type": "conversation.item.truncate",
+                "item_id": last_assistant_item,
+                "content_index": 0,
+                "audio_end_ms": elapsed_time
+            }
+            await openai_ws.send(json.dumps(truncate_event))
+            logger.info(f"Sent truncation event for item {last_assistant_item}")
+
+        # Reset state immediately
+        mark_queue.clear()
+        logger.info("🔄 Reset conversation state for user input processing")
 
     async def send_mark(self, connection, stream_sid, mark_queue):
         """Send a mark event to the stream."""
@@ -330,7 +433,7 @@ class WebSocketService:
                     duration=int(buffer.total_duration) if buffer.total_duration is not None else None
                 )
                 logger.info(f"Updated CallLog {call_sid} with duration and end time.")
-            conclusion = ""
+            conclusion = None  # Initialize as None instead of empty string
             # 2. Ask OpenAI/GPT for a confidence score for the call (new API)
             try:
                 # Use only api_key, do not pass proxies or other kwargs
@@ -362,6 +465,7 @@ class WebSocketService:
 
                 confidence_score = data.get('score')
                 conclusion = data.get('conclusion')
+                logger.info(f"[CONCLUSION DEBUG] Extracted from OpenAI - score: {confidence_score}, conclusion: {conclusion}")
                 try:
                     confidence_score = float(confidence_score)
                     logger.info(f"OpenAI conclusion for call {call_sid}: {conclusion}")
@@ -381,13 +485,26 @@ class WebSocketService:
                     self.hubspot_service.create_note_for_contact(phone_number=phone_number, transcription=conversation_text, note_content=conclusion)
                 except Exception as e:
                     logger.error(f"Error creating HubSpot note for {phone_number}: {e}")
-            if confidence_score is not None:
+            
+            logger.info(f"[CONCLUSION DEBUG] Before DB update - confidence_score: {confidence_score}, conclusion: {conclusion[:50] if conclusion else 'None'}...")
+            if confidence_score is not None or conclusion is not None:
                 async with self.prisma_service:
+                    update_data = {}
+                    if confidence_score is not None:
+                        update_data["confidenceScore"] = confidence_score
+                        logger.info(f"[CONCLUSION DEBUG] Added confidence_score to update_data: {confidence_score}")
+                    if conclusion is not None:
+                        update_data["conclusion"] = conclusion
+                        logger.info(f"[CONCLUSION DEBUG] Added conclusion to update_data: {conclusion[:50]}...")
+                    
+                    logger.info(f"[CONCLUSION DEBUG] Final update_data: {update_data}")
                     await self.prisma_service.prisma.transcription.update(
                         where={"id": transcription_row.id},
-                        data={"confidenceScore": confidence_score}
+                        data=update_data
                     )
-                    logger.info(f"Updated confidenceScore for call {call_sid} in DB.")
+                    logger.info(f"Updated confidenceScore: {confidence_score} and conclusion: {conclusion[:50] if conclusion else 'None'}... for call {call_sid} in DB.")
+            else:
+                logger.warning(f"[CONCLUSION DEBUG] No updates to perform - confidence_score: {confidence_score}, conclusion: {conclusion}")
         except Exception as e:
             logger.error(f"Error saving single JSON transcription to database for call {call_sid}: {e}")
             logger.error(f"Transcript data that failed: {transcript_json[:200]}...")
@@ -405,6 +522,7 @@ class WebSocketService:
         logger.info(f"WebSocketService: handle_media_stream called with initial_call_sid: {initial_call_sid}")
         openai_ws = None
         effective_call_sid = initial_call_sid
+        phone_number_for_context = None  # Initialize phone number for context early
 
         try:
             # We no longer need `async with self.redis_service:` here
@@ -419,7 +537,27 @@ class WebSocketService:
             )
             logger.info("Connected to OpenAI WebSocket from WebSocketService")
             
-            await self.initialize_session(openai_ws, effective_call_sid)
+            # --- NEW LOGIC START ---
+            # Attempt to get phone number from initial call_sid if available
+            if effective_call_sid:
+                try:
+                    async with self.prisma_service:
+                        call_log_entry = await self.prisma_service.get_call_log(effective_call_sid)
+                        if call_log_entry:
+                            phone_number_for_context = call_log_entry.toNumber
+                            logger.info(f"Extracted phone number from initial_call_sid: {phone_number_for_context}")
+                except Exception as e:
+                    logger.warning(f"Could not extract phone number from initial_call_sid: {e}")
+
+            # Initialize OpenAI session with basic setup (no greeting yet)
+            # We explicitly pass None for phone_number_for_context here because
+            # we haven't received the Twilio 'start' event yet for incoming calls.
+            # The context will be re-initialized once the 'start' event arrives.
+            await self.initialize_session(openai_ws, effective_call_sid, phone_number_for_context)
+            logger.info(f"[CONTEXT DEBUG] Initial initialize_session called with call_sid: {effective_call_sid}, phone_number: {phone_number_for_context}")
+            
+            # Don't send greeting yet - wait for Twilio start event to get proper context
+            # --- NEW LOGIC END ---
 
             stream_sid = None
             latest_media_timestamp = 0
@@ -429,27 +567,58 @@ class WebSocketService:
             current_session_id = None 
 
             async def receive_from_twilio_task():
-                nonlocal stream_sid, latest_media_timestamp, effective_call_sid
+                nonlocal stream_sid, latest_media_timestamp, effective_call_sid, phone_number_for_context
+                call_context = None  # Local variable for this task
                 try:
                     async for message in websocket.iter_text():
                         data = json.loads(message)
                         logger.debug(f"Received from Twilio: {data['event']}")
                         
-                        if effective_call_sid is None and data.get('event') == 'start':
-                            if 'start' in data and 'callSid' in data['start']:
-                                new_call_sid = data['start']['callSid']
-                                logger.info(f"receive_from_twilio_task: UPDATED effective_call_sid from Twilio start event: {new_call_sid}")
-                                effective_call_sid = new_call_sid 
-                                await self.initialize_session(openai_ws, effective_call_sid)  # Re-initialize with correct SID
-                            elif 'start' in data and 'parameters' in data['start'] and 'CallSid' in data['start']['parameters']:
-                                new_call_sid = data['start']['parameters']['CallSid']
-                                logger.info(f"receive_from_twilio_task: UPDATED effective_call_sid from Twilio stream parameters: {new_call_sid}")
-                                effective_call_sid = new_call_sid
-                                await self.initialize_session(openai_ws, effective_call_sid)  # Re-initialize with correct SID
+                        # Refined logic for handling the 'start' event
+                        if data.get('event') == 'start':
+                            logger.info(f"[CONTEXT DEBUG] Received Twilio start event: {data}")
+                            new_call_sid = data['start'].get('callSid')
+                            
+                            # Correctly extract phone number from 'customParameters'
+                            phone_number_from_start = None
+                            if 'customParameters' in data['start']:
+                                logger.info(f"[CONTEXT DEBUG] Start event customParameters: {data['start']['customParameters']}")
+                                phone_number_from_start = data['start']['customParameters'].get('From')
+                                if not phone_number_from_start:  # Fallback to 'To' if 'From' is not present
+                                    phone_number_from_start = data['start']['customParameters'].get('To')
+                                
+                                if phone_number_from_start:
+                                    phone_number_for_context = phone_number_from_start
+                                    logger.info(f"[CONTEXT DEBUG] Extracted and set phone_number_for_context from customParameters: {phone_number_for_context}")
                             else:
-                                logger.warning(f"receive_from_twilio_task: Call SID not found in start event for immediate update.")
+                                logger.warning(f"[CONTEXT DEBUG] No 'customParameters' found in start event: {data['start']}")
+                            
+                            # Update call_sid if we got a new one
+                            if new_call_sid and new_call_sid != effective_call_sid:
+                                logger.info(f"receive_from_twilio_task: UPDATED effective_call_sid from Twilio start event: {new_call_sid}")
+                                effective_call_sid = new_call_sid
+                            
+                            # Always re-initialize session with proper call_sid and updated phone number
+                            logger.info(f"[CONTEXT DEBUG] About to re-initialize session with call_sid: {effective_call_sid}, phone_number: {phone_number_for_context}")
+                            call_context = await self.initialize_session(openai_ws, effective_call_sid, phone_number_for_context)
+                            
+                            # Now extract context and send the context-aware greeting
+                            context = None
+                            if call_context and call_context.get('call_history'):
+                                context = self.context_service.extract_context_from_call_history(call_context['call_history'])
+                            
+                            # Send the initial greeting with proper context
+                            if openai_ws and openai_ws.open:
+                                await self.trigger_initial_conversation(openai_ws, context)
+                                logger.info("Triggered context-aware initial conversation after getting Twilio start event")
+                                
+                            stream_sid = data['start']['streamSid']
+                            logger.info(f"Incoming stream has started {stream_sid} for call_sid: {effective_call_sid}")
+                            response_start_timestamp_twilio = None
+                            latest_media_timestamp = 0
+                            last_assistant_item = None
 
-                        if data['event'] == 'media' and openai_ws.open:
+                        elif data['event'] == 'media' and openai_ws.open:
                             latest_media_timestamp = int(data['media']['timestamp'])
                             audio_append = {
                                 "type": "input_audio_buffer.append",
@@ -457,12 +626,7 @@ class WebSocketService:
                             }
                             await openai_ws.send(json.dumps(audio_append))
                             logger.debug("Sent audio chunk to OpenAI")
-                        elif data['event'] == 'start':
-                            stream_sid = data['start']['streamSid']
-                            logger.info(f"Incoming stream has started {stream_sid} for call_sid: {effective_call_sid}")
-                            response_start_timestamp_twilio = None
-                            latest_media_timestamp = 0
-                            last_assistant_item = None
+
                         elif data['event'] == 'mark':
                             if mark_queue:
                                 mark_queue.pop(0)
@@ -496,6 +660,9 @@ class WebSocketService:
                             logger.info(f"Session created with ID: {current_session_id} for call_sid: {effective_call_sid}")
                         
                         if response.get('type') == 'response.audio.delta' and 'delta' in response:
+                            # Add small delay to control speech rate and prevent rapid audio streaming
+                            await asyncio.sleep(0.02)  # 20ms delay between audio chunks for natural pacing
+                            
                             audio_payload = base64.b64encode(base64.b64decode(response['delta'])).decode('utf-8')
                             audio_delta = {
                                 "event": "media",
@@ -517,14 +684,17 @@ class WebSocketService:
                         
                         if response.get('type') == 'input_audio_buffer.speech_started':
                             logger.info(f"🎤 Speech started detected for call_sid: {effective_call_sid}")
-                            if last_assistant_item:
-                                await self.handle_speech_started_event(
-                                    openai_ws, websocket, stream_sid,
-                                    response_start_timestamp_twilio,
-                                    last_assistant_item,
-                                    latest_media_timestamp,
-                                    mark_queue
-                                )
+                            # Handle interruption immediately when user starts speaking
+                            await self.handle_speech_started_event(
+                                openai_ws, websocket, stream_sid,
+                                response_start_timestamp_twilio,
+                                last_assistant_item,
+                                latest_media_timestamp,
+                                mark_queue
+                            )
+                            # Reset tracking variables after handling interruption
+                            last_assistant_item = None
+                            response_start_timestamp_twilio = None
                         
                         if response.get('type') == 'input_audio_buffer.speech_stopped':
                             logger.info(f"🛑 Speech stopped detected for call_sid: {effective_call_sid}")

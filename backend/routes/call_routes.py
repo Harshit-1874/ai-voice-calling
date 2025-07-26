@@ -22,6 +22,13 @@ async def initiate_call(phone_number: str, request: Request):
     logger.info(f"Received call request for phone number: {phone_number}")
     return await call_controller.initiate_call(phone_number, request)
 
+@router.get("/call/{phone_number}/context")
+async def get_call_context(phone_number: str):
+    """Get context information for a phone number before making a call."""
+    logger.info("="*50)
+    logger.info(f"Getting call context for phone number: {phone_number}")
+    return await call_controller.get_call_context(phone_number)
+
 @router.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
     """Handle incoming call and return TwiML response."""
