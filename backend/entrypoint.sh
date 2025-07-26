@@ -29,4 +29,4 @@ celery -A celery_app.celery_app worker --loglevel=info --pool=solo &
 
 # Start the application
 echo "🌐 Starting FastAPI server..."
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload 
+exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload

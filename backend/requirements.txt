@@ -20,3 +20,5 @@ simplejson
 requests
 delorean
 hubspot-api-client
+celery==5.3.4
+redis==5.0.1

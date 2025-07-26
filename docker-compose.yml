@@ -1,19 +1,32 @@
-version: '3.8'
-
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai-voice-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai-voice-network
+    restart: unless-stopped
+
   backend:
     build: ./backend
     container_name: ai-voice-backend
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=file:./voice_calling.db
+      - DATABASE_URL=${SUPABASE_URL}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASS=${REDIS_PASS}
+      - REDIS_HOST_URI=${REDIS_HOST_URI}
       - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
       - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
       - HUBSPOT_ACCESS_TOKEN=${HUBSPOT_ACCESS_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - BASE_URL=${BASE_URL}
+      - BASE_URL=${BASE_URL:-http://localhost:8000}
       - PORT=8000
       - HOST=0.0.0.0
       - DEBUG=True
@@ -22,6 +35,8 @@ services:
       - backend_data:/app/data
     networks:
       - ai-voice-network
+    depends_on:
+      - redis
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -35,6 +50,8 @@ services:
     container_name: ai-voice-frontend
     ports:
       - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
     depends_on:
       backend:
         condition: service_healthy
@@ -50,6 +67,8 @@ services:
 
 volumes:
   backend_data:
+    driver: local
+  redis_data:
     driver: local
 
 networks:

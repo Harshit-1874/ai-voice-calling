@@ -23,4 +23,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5173 || exit 1
 
 # Run the development server
-CMD ["npm", "run", "start", "--", "--host", "0.0.0.0", "--port", "5173"] 
+CMD ["npm", "start", "--", "--host", "0.0.0.0", "--port", "5173"] 
