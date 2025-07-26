@@ -21,8 +21,20 @@ COPY . .
 # Generate Prisma client
 RUN prisma generate
 
-# Make startup script executable
-RUN chmod +x start.sh
+# Create data directory for database
+RUN mkdir -p /app/data /app/prisma
+
+# Create a simple startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🚀 Starting AI Voice Calling Backend..."\n\
+echo "📊 Using PostgreSQL database via SUPABASE_URL"\n\
+echo "🔧 Generating Prisma client..."\n\
+prisma generate\n\
+echo "🔄 Starting Celery worker..."\n\
+celery -A celery_app.celery_app worker --loglevel=info --pool=solo &\n\
+echo "🌐 Starting FastAPI server..."\n\
+exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload' > /app/run.sh && chmod +x /app/run.sh
 
 # Expose port
 EXPOSE 8000
@@ -32,4 +44,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the startup script
-CMD ["./start.sh"] 
+CMD ["/bin/bash", "/app/run.sh"] 
