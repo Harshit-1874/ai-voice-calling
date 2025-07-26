@@ -34,7 +34,7 @@ export default function Settings() {
       setIsFetching(true);
       setFetchError(null);
       try {
-        const response = await fetch('http://localhost:8000/constants');
+        const response = await fetch('https://ai-voice-calling-8f7t.onrender.com/constants');
         if (!response.ok) {
           throw new Error('Failed to fetch settings');
         }
@@ -64,7 +64,7 @@ export default function Settings() {
     setIsLoading(true);
     setSaveMessage(null);
     try {
-      const response = await fetch('http://localhost:8000/constants/ai-configs', {
+      const response = await fetch('https://ai-voice-calling-8f7t.onrender.com/constants/ai-configs', {
         method: 'POST', // or 'POST' depending on your API
         headers: {
           'Content-Type': 'application/json',
@@ -107,7 +107,7 @@ export default function Settings() {
     setIsFetching(true);
     setFetchError(null);
     try {
-      const response = await fetch('http://localhost:8000/constants');
+      const response = await fetch('https://ai-voice-calling-8f7t.onrender.com/constants');
       if (!response.ok) {
         throw new Error('Failed to fetch settings');
       }
