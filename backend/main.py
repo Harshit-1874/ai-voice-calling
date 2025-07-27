@@ -1,5 +1,6 @@
 import logging
 import sys
+import os
 import platform
 import asyncio
 import threading
@@ -617,11 +618,13 @@ async def queue_batch_calls(contacts: list, batch_size: int = 5, delay_between_c
 if __name__ == "__main__":
     try:
         logger.info("Starting uvicorn server with integrated Celery worker and OS-based sync")
+        # For production deployment (like Render), use the PORT env variable
+        port = int(os.getenv("PORT", PORT))
         uvicorn.run(
             app, 
             host=HOST, 
-            port=PORT,
-            log_level="debug",
+            port=port,
+            log_level="info" if not DEBUG else "debug",
             reload=False,
             workers=1,
             loop="asyncio"

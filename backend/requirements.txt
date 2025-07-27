@@ -14,11 +14,9 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.1.2
 prisma
-hubspot
+hubspot-api-client
 python-crontab
 simplejson
 requests
 delorean
-hubspot-api-client
-celery==5.3.4
-redis==5.0.1
+gunicorn==21.2.0
