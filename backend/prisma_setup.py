@@ -12,8 +12,8 @@ async def ensure_prisma_setup():
         logger.info("🔧 Checking Prisma setup...")
         
         # Set environment variables for Prisma
-        os.environ["PRISMA_CLI_BINARY_TARGETS"] = "debian-openssl-3.0.x"
-        os.environ["PRISMA_QUERY_ENGINE_BINARY"] = "debian-openssl-3.0.x"
+        os.environ["PRISMA_CLI_BINARY_TARGETS"] = "query-engine-debian-openssl-3.0.x"
+        os.environ["PRISMA_QUERY_ENGINE_BINARY"] = "query-engine-debian-openssl-3.0.x"
         
         # Check if we're in a deployment environment
         is_deployment = os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("PORT", "").startswith("10")
