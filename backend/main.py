@@ -229,6 +229,15 @@ async def lifespan(app: FastAPI):
     global sync_task, celery_worker_thread
     
     logger.info("Starting application lifespan")
+    
+    # Setup Prisma binaries for deployment
+    try:
+        from prisma_setup import ensure_prisma_setup
+        await ensure_prisma_setup()
+        logger.info("Prisma setup completed")
+    except Exception as e:
+        logger.warning(f"Prisma setup warning: {e}")
+    
     validate_env()
     logger.info("All environment variables validated")
     
