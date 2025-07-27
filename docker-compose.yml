@@ -26,7 +26,7 @@ services:
       - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
       - HUBSPOT_ACCESS_TOKEN=${HUBSPOT_ACCESS_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - BASE_URL=${BASE_URL:-http://localhost:8000}
+      - BASE_URL=${BASE_URL:-https://ai-voice-calling-4u4w.onrender.com/}
       - PORT=8000
       - HOST=0.0.0.0
       - DEBUG=True
