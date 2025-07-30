@@ -57,3 +57,30 @@ class ConstantController:
         except Exception as e:
             logger.error(f"Error updating constant: {str(e)}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
+        
+    async def list_constants(self):
+        """List all constants."""
+        try:
+            constants = await self.prisma_service.get_all_constants()
+            return constants
+        except Exception as e:
+            logger.error(f"Error listing constants: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+    
+    async def create_ai_config(self, data: dict):
+        """Create or update AI configuration constants."""
+        try:
+            # Assuming data contains keys like 'VOICE', 'SYSTEM_MESSAGE', 'TEMPERATURE'
+            voice = data.get("VOICE", "")
+            system_message = data.get("SYSTEM_MESSAGE", "")
+            temperature = data.get("TEMPERATURE", 0.5)  # Default temperature
+            
+            # Update or create constants
+            await self.prisma_service.set_constant("VOICE", voice)
+            await self.prisma_service.set_constant("SYSTEM_MESSAGE", system_message)
+            await self.prisma_service.set_constant("TEMPERATURE", temperature)
+            
+            return {"message": "AI configuration updated successfully"}
+        except Exception as e:
+            logger.error(f"Error creating AI config: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
