@@ -11,7 +11,7 @@ export default function CallCenter() {
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const res = await fetch('http://localhost:8000/call-status');
+        const res = await fetch('https://ai-voice-calling-3.onrender.com/call-status');
         const data = await res.json();
         setCallStatus(data);
       } catch {}
@@ -25,7 +25,7 @@ export default function CallCenter() {
   useEffect(() => {
     const fetchTemp = async () => {
       try {
-        const res = await fetch('http://localhost:8000/hubspot-temp');
+        const res = await fetch('https://ai-voice-calling-3.onrender.com/hubspot-temp');
         const data = await res.json();
         setHubspotTemp(Array.isArray(data) ? data : []);
       } catch {}
@@ -39,7 +39,7 @@ export default function CallCenter() {
     if (!phoneNumber) return;
     setCalling(true);
     try {
-      await fetch(`http://localhost:8000/call/${phoneNumber}`);
+      await fetch(`https://ai-voice-calling-3.onrender.com/call/${phoneNumber}`);
     } catch {}
     setCalling(false);
   };

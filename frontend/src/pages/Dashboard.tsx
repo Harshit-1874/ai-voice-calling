@@ -40,7 +40,7 @@ export default function Dashboard() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch('http://localhost:8000/call-logs');
+        const res = await fetch('https://ai-voice-calling-3.onrender.com/call-logs');
         if (!res.ok) throw new Error('Failed to fetch dashboard data');
         const data = await res.json();
         // Stats
@@ -79,7 +79,7 @@ export default function Dashboard() {
       setHubspotLoading(true);
       setHubspotError(null);
       try {
-        const res = await fetch('http://localhost:8000/hubspot/contacts');
+        const res = await fetch('https://ai-voice-calling-3.onrender.com/hubspot/contacts');
         if (!res.ok) throw new Error('Failed to fetch HubSpot contacts');
         const data = await res.json();
         setHubspotContacts(data.contacts || []);
@@ -98,7 +98,7 @@ export default function Dashboard() {
     setCalling(true);
     setCallResult(null);
     try {
-      const res = await fetch(`http://localhost:8000/call/${encodeURIComponent(phoneNumber)}`, { method: 'POST' });
+      const res = await fetch(`https://ai-voice-calling-3.onrender.com/call/${encodeURIComponent(phoneNumber)}`, { method: 'POST' });
       if (!res.ok) throw new Error('Failed to initiate call');
       const data = await res.json();
       setCallResult('Call initiated!');
@@ -114,7 +114,7 @@ export default function Dashboard() {
     setLogsLoading(true);
     setLogsError(null);
     try {
-      const res = await fetch('http://localhost:8000/call-logs');
+      const res = await fetch('https://ai-voice-calling-3.onrender.com/call-logs');
       if (!res.ok) throw new Error('Failed to fetch call logs');
       const data = await res.json();
       setCallLogs(data.call_logs || []);

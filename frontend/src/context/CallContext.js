@@ -15,7 +15,7 @@ export function CallProvider({ children }) {
   const fetchCalls = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:8000/call-status');
+      const response = await fetch('https://ai-voice-calling-3.onrender.com/call-status');
       const data = await response.json();
       setCalls(prevCalls => [...prevCalls, data]);
     } catch (err) {
@@ -28,7 +28,7 @@ export function CallProvider({ children }) {
   const fetchContacts = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:8000/contacts');
+      const response = await fetch('https://ai-voice-calling-3.onrender.com/contacts');
       if (!response.ok) {
         throw new Error('Failed to fetch contacts');
       }
@@ -46,7 +46,7 @@ export function CallProvider({ children }) {
   const makeCall = async (phoneNumber) => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:8000/call/${phoneNumber}`, {
+      const response = await fetch(`https://ai-voice-calling-3.onrender.com/call/${phoneNumber}`, {
         method: 'POST',
       });
       if (!response.ok) {
