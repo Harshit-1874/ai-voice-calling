@@ -614,7 +614,7 @@ class PrismaService:
                     "transcriptions": True,
                     "conversation": True
                 },
-                order={"startTime": "desc"},
+                order_by={"startTime": "desc"},
                 take=limit
             )
             
@@ -667,25 +667,73 @@ class PrismaService:
         try:
             await self.ensure_connected()
             
-            # Try to find existing contact (optional)
+            # Try to find existing contact
             contact = await self.prisma.contact.find_unique(
-                where={"phone": phone_number}
+                where={"phone": phone_number},
+                include={
+                    "calls": {
+                        "include": {
+                            "transcriptions": True,
+                            "conversation": True
+                        },
+                        "order_by": {"startTime": "desc"},
+                        "take": 3  # Last 3 calls
+                    }
+                }
             )
             
-            # Always get previous calls directly (more reliable)
-            previous_calls = await self.get_previous_calls_for_number(phone_number, 3)
-            
-            return {
-                "contact": {
-                    "id": contact.id,
-                    "name": contact.name,
-                    "phone": contact.phone,
-                    "email": contact.email,
-                    "company": contact.company,
-                    "notes": contact.notes
-                } if contact else None,
-                "call_history": previous_calls
-            }
+            if contact:
+                context = {
+                    "contact": {
+                        "id": contact.id,
+                        "name": contact.name,
+                        "phone": contact.phone,
+                        "email": contact.email,
+                        "company": contact.company,
+                        "notes": contact.notes
+                    },
+                    "call_history": []
+                }
+                
+                # Process call history
+                for call in contact.calls:
+                    call_info = {
+                        "callSid": call.callSid,
+                        "status": call.status,
+                        "startTime": call.startTime,
+                        "duration": call.duration,
+                        "transcriptions": [],
+                        "conversation": None
+                    }
+                    
+                    # Add transcriptions
+                    if call.transcriptions:
+                        for trans in call.transcriptions:
+                            try:
+                                transcript_data = json.loads(trans.transcript) if trans.transcript else []
+                                call_info["transcriptions"] = transcript_data
+                            except json.JSONDecodeError:
+                                call_info["transcriptions"] = []
+                    
+                    # Add conversation analysis
+                    if call.conversation:
+                        call_info["conversation"] = {
+                            "summary": call.conversation.summary,
+                            "keyPoints": call.conversation.keyPoints,
+                            "sentiment": call.conversation.sentiment,
+                            "nextAction": call.conversation.nextAction
+                        }
+                    
+                    context["call_history"].append(call_info)
+                
+                return context
+            else:
+                # No contact found, get call history anyway
+                previous_calls = await self.get_previous_calls_for_number(phone_number, 3)
+                return {
+                    "contact": None,
+                    "call_history": previous_calls
+                }
                 
         except Exception as e:
             logger.error(f"Error getting contact context for {phone_number}: {str(e)}")

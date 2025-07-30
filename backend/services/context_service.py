@@ -16,13 +16,11 @@ class ContextService:
             'salon': ['salon', 'hair', 'beauty', 'spa', 'barber'],
             'medical': ['clinic', 'doctor', 'medical', 'health', 'dental', 'hospital'],
             'automotive': ['garage', 'car', 'auto', 'mechanic', 'vehicle'],
-            'service': ['service', 'repair', 'maintenance', 'cleaning', 'plumbing', 'electrical'],
-            'technology': ['web development', 'software', 'app development', 'tech', 'developer', 'programmer', 'coding', 'website', 'digital agency', 'it services', 'web design'],
-            'agency': ['agency', 'marketing agency', 'advertising', 'creative agency', 'consulting']
+            'service': ['service', 'repair', 'maintenance', 'cleaning', 'plumbing', 'electrical']
         }
 
     def extract_context_from_call_history(self, call_history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Extract useful context from previous call transcriptions and summaries"""
+        """Extract useful context from previous call transcriptions"""
         context = {
             'customer_name': None,
             'business_name': None,
@@ -47,27 +45,17 @@ class ContextService:
         if sorted_calls:
             context['last_call_date'] = sorted_calls[0].get('startTime')
         
-        # Extract insights from AI-generated call conclusions (much simpler than transcription parsing)
-        conclusions = []
+        # Analyze all transcriptions
+        all_transcripts = []
         for call in sorted_calls:
-            # Check if there are transcriptions with conclusions
             transcriptions = call.get('transcriptions', [])
-            for transcription in transcriptions:
-                # Check for conclusion field directly (from updated schema)
-                conclusion = transcription.get('conclusion')
-                if conclusion:
-                    conclusions.append(conclusion)
-                    logger.info(f"Found conclusion for context: {conclusion[:100]}...")
+            if transcriptions:
+                all_transcripts.extend(transcriptions)
         
-        logger.info(f"Found {len(conclusions)} conclusions for context analysis")
+        if all_transcripts:
+            context.update(self._analyze_transcripts(all_transcripts))
         
-        # Analyze conclusions using AI insights
-        if conclusions:
-            context.update(self._analyze_conclusions(conclusions))
-        else:
-            logger.info("No conclusions found, using basic context")
-        
-        # Get conversation summaries (fallback if no conclusions)
+        # Get conversation summaries
         for call in sorted_calls:
             conversation = call.get('conversation')
             if conversation and conversation.get('summary'):
@@ -79,73 +67,18 @@ class ContextService:
         
         return context
 
-    def _analyze_conclusions(self, conclusions: List[str]) -> Dict[str, Any]:
-        """Analyze AI-generated call conclusions to extract business insights (much simpler!)"""
-        context = {}
-        
-        # Combine all conclusions into one text for analysis
-        combined_text = " ".join(conclusions).lower()
-        
-        # Extract business type from conclusions using keywords
-        context['business_type'] = self._extract_business_type_from_text(combined_text)
-        
-        # Extract key insights from the conclusions
-        insights = []
-        
-        # Check for engagement patterns
-        if any(word in combined_text for word in ['disengaged', 'abruptly', 'hung up', 'bye']):
-            insights.append("Customer seemed disengaged in previous call")
-        elif any(word in combined_text for word in ['interested', 'potential', 'follow-up']):
-            insights.append("Customer showed interest in payment solutions")
-        
-        # Check for business information sharing
-        if any(phrase in combined_text for phrase in ['business', 'payment processes', 'current payment']):
-            insights.append("Business details already discussed in previous call")
-        
-        # Check for meeting/callback requests
-        if any(phrase in combined_text for phrase in ['meeting', 'callback', 'follow up', 'contact later']):
-            insights.append("Customer requested callback - was busy during last call")
-        
-        # Check for payment discussion
-        if any(phrase in combined_text for phrase in ['payment solutions', 'payment processing', 'smart payment']):
-            insights.append("Payment solutions discussion was initiated")
-            
-        # Extract interests and objections from conclusions
-        if any(word in combined_text for word in ['genuine interest', 'interested', 'wants to learn']):
-            context['previous_interests'] = ["Showed interest in payment solutions"]
-        
-        if any(word in combined_text for word in ['not interested', 'declined', 'rejected']):
-            context['previous_objections'] = ["Previously declined services"]
-        
-        context['key_insights'] = insights
-        
-        return context
-
-    def _extract_business_type_from_text(self, text: str) -> Optional[str]:
-        """Extract business type from any text using keywords"""
-        for business_type, keywords in self.business_keywords.items():
-            for keyword in keywords:
-                if keyword in text:
-                    return business_type
-        return None
-
     def _analyze_transcripts(self, transcripts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Analyze transcript entries to extract insights"""
         context = {}
         user_texts = []
         assistant_texts = []
         
-        # Separate user and assistant messages from the new format
+        # Separate user and assistant messages
         for entry in transcripts:
-            speaker = entry.get('speaker', '').lower()
-            text = entry.get('text', '').lower()
-            is_final = entry.get('is_final', True)
-            
-            if is_final and text:  # Only process final, non-empty transcripts
-                if speaker == 'user':
-                    user_texts.append(text)
-                elif speaker == 'assistant':
-                    assistant_texts.append(text)
+            if entry.get('speaker') == 'user' and entry.get('is_final', True):
+                user_texts.append(entry.get('text', '').lower())
+            elif entry.get('speaker') == 'assistant' and entry.get('is_final', True):
+                assistant_texts.append(entry.get('text', '').lower())
         
         # Extract customer name
         context['customer_name'] = self._extract_name(user_texts + assistant_texts)
@@ -272,41 +205,17 @@ class ContextService:
         if len(user_texts) < 3:
             insights.append("Previous call was very brief")
         
-        # Check if customer was busy or requested callback
-        busy_indicators = ['busy', 'meeting', 'can\'t talk', 'call back', 'later', 'call you later', 'not a good time']
+        # Check if customer was busy
+        busy_indicators = ['busy', 'meeting', 'can\'t talk', 'call back', 'later']
         for text in user_texts:
             for indicator in busy_indicators:
                 if indicator in text:
-                    insights.append("Customer requested callback - was busy during last call")
+                    insights.append("Customer was busy during last call")
                     break
         
         # Check conversation flow
         if len(user_texts) > 5:
             insights.append("Had a detailed conversation previously")
-        
-        # Check if business details were already shared
-        business_details = ['business', 'company', 'operate', 'run', 'work', 'agency', 'development']
-        business_mentioned = False
-        for text in user_texts:
-            for detail in business_details:
-                if detail in text:
-                    business_mentioned = True
-                    break
-        
-        if business_mentioned:
-            insights.append("Business details already discussed in previous call")
-        
-        # Check if payment discussion started
-        payment_terms = ['payment', 'cash', 'card', 'transactions', 'digital', 'processing']
-        payment_discussed = False
-        for text in user_texts + assistant_texts:
-            for term in payment_terms:
-                if term in text:
-                    payment_discussed = True
-                    break
-        
-        if payment_discussed:
-            insights.append("Payment solutions discussion was initiated")
         
         return insights
 
@@ -317,86 +226,47 @@ class ContextService:
         
         context_additions = []
         
-        # Build specific callback greeting based on previous conversation
-        callback_context = self._build_callback_context(context)
-        if callback_context:
-            context_additions.append(f"CALLBACK CONTEXT: {callback_context}")
-            context_additions.append("Start with: 'Hi, this is Teya UK calling back. I know you mentioned [reference their business/situation]. Is now a better time to continue our conversation?'")
-        
         # Add customer name context
         if context.get('customer_name'):
-            context_additions.append(f"The customer's name is {context['customer_name']}. Greet them by name.")
+            context_additions.append(f"The customer's name is {context['customer_name']}. Greet them by name and reference that you've spoken before.")
         
-        # Add business context with specific details
-        business_context = self._build_business_context(context)
-        if business_context:
-            context_additions.append(f"BUSINESS CONTEXT: {business_context}")
+        # Add business context
+        if context.get('business_name'):
+            context_additions.append(f"They run a business called {context['business_name']}.")
+        elif context.get('business_type'):
+            context_additions.append(f"They operate in the {context['business_type']} industry.")
         
-        # Add payment discussion context
-        payment_context = self._build_payment_context(context)
-        if payment_context:
-            context_additions.append(f"PAYMENT CONTEXT: {payment_context}")
+        # Add previous conversation context
+        if context.get('last_conversation_summary'):
+            context_additions.append(f"Previous conversation summary: {context['last_conversation_summary']}")
         
         # Add call outcome context
         if context.get('call_outcomes'):
             latest_outcome = context['call_outcomes'][0]
-            context_additions.append(f"Previous call outcome: {latest_outcome}")
+            context_additions.append(f"Last call outcome: {latest_outcome}")
         
-        # Add specific insights
+        # Add objections context
+        if context.get('previous_objections'):
+            objections = ', '.join(context['previous_objections'][:2])
+            context_additions.append(f"Previous concerns raised: {objections}")
+        
+        # Add payment preferences
+        if context.get('payment_preferences'):
+            prefs = ', '.join(context['payment_preferences'])
+            context_additions.append(f"Payment preferences mentioned: {prefs}")
+        
+        # Add insights
         if context.get('key_insights'):
-            for insight in context['key_insights']:
-                if 'callback' in insight.lower() or 'busy' in insight.lower():
-                    context_additions.append(f"IMPORTANT: {insight} - acknowledge this and pick up where you left off")
-                else:
-                    context_additions.append(f"Note: {insight}")
+            insights = '. '.join(context['key_insights'])
+            context_additions.append(f"Key insights: {insights}")
         
-        # Add conversation continuation instructions
+        # Add timing context
         if context.get('total_calls') > 1:
-            context_additions.append(f"This is your {context['total_calls'] + 1} conversation with this customer. Continue building the relationship and don't repeat information already discussed.")
+            context_additions.append(f"This is your {context['total_calls'] + 1} conversation with this customer.")
         
         if context_additions:
             context_text = "\n\nCONTEXT FROM PREVIOUS CALLS:\n" + "\n".join(f"- {addition}" for addition in context_additions)
-            context_text += "\n\nIMPORTANT: Use this context to have a personalized conversation. Reference previous discussions naturally, acknowledge their specific situation, and continue from where you left off. Do NOT start with generic questions about their business if this information was already discussed."
+            context_text += "\n\nUse this context to have a more personalized conversation. Reference previous discussions naturally and continue building the relationship."
             return base_system_message + context_text
         
         return base_system_message
-
-    def _build_callback_context(self, context: Dict[str, Any]) -> str:
-        """Build specific callback context for greetings"""
-        insights = context.get('key_insights', [])
-        for insight in insights:
-            if 'callback' in insight.lower() or 'busy' in insight.lower():
-                return "This is a callback - customer was busy and requested to be called back"
-        return ""
-
-    def _build_business_context(self, context: Dict[str, Any]) -> str:
-        """Build business context summary"""
-        business_info = []
-        
-        if context.get('business_name'):
-            business_info.append(f"Business: {context['business_name']}")
-        elif context.get('business_type'):
-            business_info.append(f"Business type: {context['business_type']}")
-        
-        # Add specific business details from insights
-        insights = context.get('key_insights', [])
-        for insight in insights:
-            if 'business details' in insight.lower():
-                business_info.append("Business details already discussed")
-        
-        return ", ".join(business_info) if business_info else ""
-
-    def _build_payment_context(self, context: Dict[str, Any]) -> str:
-        """Build payment context summary"""
-        payment_info = []
-        
-        if context.get('payment_preferences'):
-            prefs = ', '.join(context['payment_preferences'])
-            payment_info.append(f"Current payment methods: {prefs}")
-        
-        insights = context.get('key_insights', [])
-        for insight in insights:
-            if 'payment' in insight.lower():
-                payment_info.append("Payment solutions discussion was started")
-        
-        return ", ".join(payment_info) if payment_info else ""
