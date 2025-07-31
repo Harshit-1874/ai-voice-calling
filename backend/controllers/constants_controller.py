@@ -78,7 +78,7 @@ class ConstantController:
             # Update or create constants
             await self.prisma_service.set_constant("VOICE", voice)
             await self.prisma_service.set_constant("SYSTEM_MESSAGE", system_message)
-            await self.prisma_service.set_constant("TEMPERATURE", temperature)
+            await self.prisma_service.set_constant("TEMPERATURE", str(temperature))
             
             return {"message": "AI configuration updated successfully"}
         except Exception as e:
