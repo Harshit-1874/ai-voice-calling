@@ -81,7 +81,10 @@ export default function Settings() {
       }
 
       setSaveMessage('Settings saved successfully');
-      setTimeout(() => setSaveMessage(null), 3000);
+      setTimeout(() => {
+        setSaveMessage(null);
+        window.location.href = '/';
+      }, 3000);
     } catch (error: any) {
       setSaveMessage(error.message || 'Failed to save settings');
       setTimeout(() => setSaveMessage(null), 3000);
@@ -114,9 +117,9 @@ export default function Settings() {
       const data = await response.json();
       
       const fetchedSettings: Settings = {
-        voice: data.voice || initialSettings.voice,
-        systemPrompt: data.system_prompt || data.systemPrompt || initialSettings.systemPrompt,
-        temperature: data.temperature !== undefined ? data.temperature : initialSettings.temperature,
+        voice: data.VOICE || initialSettings.voice,
+        systemPrompt: data.SYSTEM_MESSAGE || initialSettings.systemPrompt,
+        temperature: data.TEMPERATURE !== undefined ? data.TEMPERATURE : initialSettings.temperature,
       };
       
       setSettings(fetchedSettings);
